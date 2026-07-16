@@ -19,3 +19,19 @@ class ModelWithFileField(models.Model):
     """
 
     file = models.FileField()
+
+
+class Tag(models.Model):
+    name = models.CharField(max_length=30)
+
+
+class Article(models.Model):
+    """
+    Exercises the complete-snapshot (auto_now/auto_now_add fields) and reachable
+    many-to-many serialization.
+    """
+
+    title = models.CharField(max_length=100)
+    tags = models.ManyToManyField(Tag, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)

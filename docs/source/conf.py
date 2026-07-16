@@ -6,8 +6,8 @@ project = "django-webhook"
 copyright = "2024, Dani Hodovic"  # pylint: disable=redefined-builtin
 author = "Dani Hodovic"
 
-release = "0.0.7"
-version = "0.0.7"
+release = "0.9.0"
+version = "0.9.0"
 
 # -- General configuration
 

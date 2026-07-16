@@ -33,13 +33,27 @@ def warn_about_webhooks_settings(app_configs, **kwargs):
             for model_name in models:
                 app_label, model_label = model_name.split(".")
                 try:
-                    apps.get_model(app_label, model_label)
+                    model = apps.get_model(app_label, model_label)
                 except LookupError:
                     errors.append(
                         Error(
                             base_msg,
                             hint=f"'{model_name}' in DJANGO_WEBHOOK.MODELS doesn't exist in your Django app",
                             id="django_webhook.E03",
+                        )
+                    )
+                    continue
+
+                # django_webhook's own models must never emit: a WebhookEvent is
+                # created on every delivery, so emitting on it would recurse
+                # forever.
+                if model._meta.app_label == "django_webhook":
+                    errors.append(
+                        Error(
+                            "django_webhook's own models cannot be registered for webhooks",
+                            hint=f"Remove '{model_name}' from DJANGO_WEBHOOK.MODELS — "
+                            "emitting on django_webhook models would loop infinitely",
+                            id="django_webhook.E04",
                         )
                     )
 

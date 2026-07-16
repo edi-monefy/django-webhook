@@ -25,6 +25,8 @@ django-webhook-signature-v1:
 django-webhook-request-timestamp: 1697818014
 
 {
+  "event_id": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+  "occurred_at": "2023-10-20T18:06:54+00:00",
   "topic": "users.User/create",
   "object": {
     "id": 3,
@@ -36,12 +38,22 @@ django-webhook-request-timestamp: 1697818014
 }
 ```
 
+Each event carries a unique `event_id` and the `occurred_at` time of the change (both stable across
+retries), so at-least-once redeliveries are safe to dedup and order.
+
 ### 🔥 Features
 - Automatically sends webhooks on model changes
+- Dispatch only after the database transaction commits — a rollback never publishes
+- Event production is isolated from the writer: a serializer or broker error can never fail `save()`
 - Leverages Celery for processing
 - Webhook authentication using HMAC
-- Retries with exponential backoff
-- Admin integration
+- Retries every failure mode (connection, timeout, error response) with exponential backoff
+- Configurable request timeout
+- Manual re-send of recorded deliveries, from the admin or programmatically
+- Independent retention windows for succeeded and failed deliveries
+- Pluggable per-model payload serializers
+- Public emission API for set-based writes (`QuerySet.update`, `bulk_create`, `bulk_update`)
+- Admin integration (configurable admin site)
 - Audit log with past webhook events
 - Protection from replay attacks
 
@@ -49,6 +61,7 @@ django-webhook-request-timestamp: 1697818014
 ### 📜 Table of Contents
 ```{toctree}
 install
+configuration
 celery
 examples
 ```
