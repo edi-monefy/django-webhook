@@ -1,5 +1,6 @@
 import logging
 
+from django.apps import apps
 from django.contrib import admin, messages
 from django.contrib.admin import TabularInline
 from django.utils.module_loading import import_string
@@ -7,7 +8,7 @@ from django.utils.module_loading import import_string
 from django_webhook.models import Webhook, WebhookEvent, WebhookSecret
 
 from .forms import WebhookForm
-from .settings import get_settings
+from .settings import DEFAULT_ADMIN_SITE, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +73,29 @@ def _resolve_admin_site():
 
     ``DJANGO_WEBHOOK["ADMIN_SITE"]`` may be an ``AdminSite`` instance, a dotted
     path to one, or ``None`` / ``"none"`` to opt out entirely (spec E1).
+
+    The default resolves ``django.contrib.admin.site``, which requires the admin
+    app to be installed. A project that doesn't install ``django.contrib.admin``
+    (e.g. an API-only service) simply has nothing to register on — that must be a
+    silent no-op, never a startup crash.
     """
     site = get_settings().get("ADMIN_SITE")
     if site is None or site == "none":
         return None
+
+    if site == DEFAULT_ADMIN_SITE and not apps.is_installed("django.contrib.admin"):
+        return None
+
     if isinstance(site, str):
-        return import_string(site)
+        try:
+            return import_string(site)
+        except ImportError:
+            logger.warning(
+                "DJANGO_WEBHOOK['ADMIN_SITE']=%r could not be imported; "
+                "skipping admin registration.",
+                site,
+            )
+            return None
     return site
 
 

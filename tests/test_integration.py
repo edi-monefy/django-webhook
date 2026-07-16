@@ -44,6 +44,16 @@ def test_admin_registration_can_be_disabled():
         assert _resolve_admin_site() is None
 
 
+def test_admin_registration_noop_without_admin_app(mocker):
+    # An API-only project that doesn't install django.contrib.admin must not
+    # crash at startup on the default ADMIN_SITE — it simply has nowhere to
+    # register. (Regression: register_admin() used to import admin.site eagerly.)
+    mocker.patch("django_webhook.admin.apps.is_installed", return_value=False)
+    with override_settings(DJANGO_WEBHOOK=dict(MODELS=["tests.User"])):
+        assert _resolve_admin_site() is None
+        register_admin()  # must not raise
+
+
 # --------------------------------------------------------------------------- #
 # E2 — idempotent topic sync outside startup
 # --------------------------------------------------------------------------- #

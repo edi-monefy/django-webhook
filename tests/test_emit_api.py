@@ -119,3 +119,20 @@ def test_without_coalescing_each_emission_delivers(responses):
         emit_event(article, "update")
 
     assert len(responses.calls) == 2
+
+
+@pytest.mark.django_db(databases=["default", "secondary"], transaction=True)
+@override_settings(DJANGO_WEBHOOK=dict(MODELS=["tests.Article"], USE_CACHE=False))
+def test_dispatch_defers_to_the_writers_database(responses):
+    # A write to a secondary database must dispatch on *that* database's commit,
+    # not the default connection's.
+    _article_webhook(responses)  # subscription lives on default
+    article = Article(title="secondary")
+
+    with transaction.atomic(using="secondary"):
+        article.save(using="secondary")
+        emit_event(article, "update")
+        # Inside the secondary transaction the delivery has not fired yet.
+        assert len(responses.calls) == 0
+    # Committing the secondary transaction fires it.
+    assert len(responses.calls) == 1

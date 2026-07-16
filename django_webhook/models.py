@@ -199,8 +199,11 @@ def sync_topics(*, prune=True):
     )
     to_create = allowed_topics - existing
     if to_create:
+        # ignore_conflicts guards against a concurrent sync (e.g. two workers
+        # booting at once) racing on the unique name constraint.
         WebhookTopic.objects.bulk_create(
-            [WebhookTopic(name=name) for name in sorted(to_create)]
+            [WebhookTopic(name=name) for name in sorted(to_create)],
+            ignore_conflicts=True,
         )
         logging.info("Adding topics: %s", sorted(to_create))
     return (len(to_create), deleted)

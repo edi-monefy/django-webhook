@@ -23,7 +23,7 @@ import logging
 from datetime import timedelta
 
 from celery import states
-from django.db import connections, transaction
+from django.db import DEFAULT_DB_ALIAS, connections, transaction
 
 from .serializers import encode_payload, serialize_instance
 from .settings import get_settings
@@ -68,13 +68,19 @@ def emit_events(instances, operation, *, occurred_at=None):
         model_label = instance._meta.label
         topic = f"{model_label}/{operation}"
         pk = getattr(instance, "pk", None)
+        # Defer to the commit of the database the instance was written to, so a
+        # write to a secondary database dispatches on that database's commit.
+        state = instance._state  # pylint: disable=protected-access
+        using = state.db or DEFAULT_DB_ALIAS
         # Serialize *now*, in the writer's call stack, so the snapshot reflects
         # the state at the moment of change. This is isolated (never raises —
         # see ``serialize_instance``), so it cannot harm the write, and it is
         # correct on delete, where ``instance.pk`` is cleared before the
         # on-commit callback would run.
         data, serialize_error = serialize_instance(instance, model_label)
-        _schedule(topic, model_label, pk, data, occurred_at, serialize_error, settings)
+        _schedule(
+            topic, model_label, pk, data, occurred_at, serialize_error, settings, using
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -88,7 +94,7 @@ def _schedule(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     occurred_at,
     serialize_error,
     settings,
-    using="default",
+    using=DEFAULT_DB_ALIAS,
 ):
     def run():
         _deliver(topic, model_label, data, occurred_at, serialize_error, settings)
@@ -238,7 +244,11 @@ def _deliver_one(  # pylint: disable=too-many-arguments,too-many-locals
             topic,
         )
         if event is not None:
-            WebhookEvent.objects.filter(id=event.id).update(
+            # Only claim an enqueue failure if the row is still PENDING. Under
+            # CELERY_TASK_ALWAYS_EAGER the task runs inline inside .delay(), so a
+            # delivery error surfaces here having already recorded its own
+            # terminal status — don't clobber that with a misleading message.
+            WebhookEvent.objects.filter(id=event.id, status=states.PENDING).update(
                 status=states.FAILURE, error=f"enqueue error: {ex!r}"
             )
         else:
