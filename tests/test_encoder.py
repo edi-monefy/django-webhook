@@ -24,6 +24,7 @@ def test_custom_encoder(
     responses,
     webhook_factory,
     webhook_topic_factory,
+    django_capture_on_commit_callbacks,
 ):
     settings.DJANGO_WEBHOOK["PAYLOAD_ENCODER_CLASS"] = (
         "tests.test_encoder.MyCustomEncoder"
@@ -38,7 +39,8 @@ def test_custom_encoder(
     test_file = SimpleUploadedFile(
         "test_file.txt", b"These are the file contents.", content_type="text/plain"
     )
-    ModelWithFileField.objects.create(file=test_file)
+    with django_capture_on_commit_callbacks(execute=True):
+        ModelWithFileField.objects.create(file=test_file)
 
     req = responses.calls[0].request
     json_body = json.loads(req.body)

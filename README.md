@@ -38,10 +38,18 @@ django-webhook-request-timestamp: 1697818014
 
 ### 🔥 Features
 - Automatically sends webhooks on model changes
+- Dispatch only after the database transaction commits — a rollback never publishes
+- Event production is isolated from the writer: a serializer or broker error can never fail `save()`
 - Leverages Celery for processing
 - Webhook authentication using HMAC
-- Retries with exponential backoff
-- Admin integration
+- Retries every failure mode (connection, timeout, error response) with exponential backoff
+- Configurable request timeout
+- Per-event id and occurrence time in the envelope for safe dedup/ordering
+- Manual re-send of recorded deliveries, from the admin or programmatically
+- Independent retention windows for succeeded and failed deliveries
+- Pluggable per-model payload serializers
+- Public emission API for set-based writes (`QuerySet.update`, `bulk_create`, `bulk_update`)
+- Admin integration (configurable admin site)
 - Audit log with past webhook events
 - Protection from replay attacks
 - Allows rotating webhook secrets

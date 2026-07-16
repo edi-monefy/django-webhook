@@ -1,0 +1,300 @@
+"""
+Event dispatch.
+
+This is the single seam through which every webhook event is produced, whether
+it originates from a model signal or from the public emission API. It guarantees
+the package's core invariants:
+
+* **Transactional integrity (A1).** Deliveries are enqueued only after the
+  originating transaction commits, and never if it rolls back. Configurable via
+  ``DJANGO_WEBHOOK["DISPATCH_ON_COMMIT"]`` (default on). With no transaction
+  open, dispatch happens immediately.
+* **The writer is never harmed (A2).** Serializing and enqueueing runs after
+  commit and is fully isolated: any error degrades to a recorded, retryable
+  delivery failure instead of propagating into the caller's ``save()``.
+* **Event identity (C2).** Every event carries a unique ``event_id`` and an
+  ``occurred_at`` captured at emission, both stable across retries.
+* **Direct dispatch (D2).** Emission builds and enqueues deliveries directly. It
+  never re-broadcasts ``post_save``/``post_delete``, so unrelated receivers are
+  not re-triggered.
+"""
+
+import logging
+from datetime import timedelta
+
+from celery import states
+from django.db import connections, transaction
+
+from .serializers import encode_payload, serialize_instance
+from .settings import get_settings
+from .util import cache
+
+logger = logging.getLogger(__name__)
+
+CREATE = "create"
+UPDATE = "update"
+DELETE = "delete"
+
+
+# --------------------------------------------------------------------------- #
+# Public emission API (spec D1)
+# --------------------------------------------------------------------------- #
+def emit_event(instance, operation, *, occurred_at=None):
+    """
+    Emit a webhook event for a single ``instance`` and ``operation`` (one of
+    ``"create"``, ``"update"``, ``"delete"``).
+
+    Dispatches directly — it does not re-send model signals (spec D2) — and is
+    safe to call inside a transaction: the delivery fires on commit.
+    """
+    emit_events([instance], operation, occurred_at=occurred_at)
+
+
+def emit_events(instances, operation, *, occurred_at=None):
+    """
+    Emit a webhook event for each instance in ``instances`` (all for the same
+    ``operation``). Instances may span models. See :func:`emit_event`.
+
+    This is the supported entry point for set-based writes — ``QuerySet.update``,
+    ``bulk_create``, ``bulk_update`` — which produce no model signals.
+    """
+    from django.utils import timezone  # pylint: disable=import-outside-toplevel
+
+    settings = get_settings()
+    if occurred_at is None:
+        occurred_at = timezone.now()
+
+    for instance in instances:
+        model_label = instance._meta.label
+        topic = f"{model_label}/{operation}"
+        pk = getattr(instance, "pk", None)
+        # Serialize *now*, in the writer's call stack, so the snapshot reflects
+        # the state at the moment of change. This is isolated (never raises —
+        # see ``serialize_instance``), so it cannot harm the write, and it is
+        # correct on delete, where ``instance.pk`` is cleared before the
+        # on-commit callback would run.
+        data, serialize_error = serialize_instance(instance, model_label)
+        _schedule(topic, model_label, pk, data, occurred_at, serialize_error, settings)
+
+
+# --------------------------------------------------------------------------- #
+# Scheduling: on-commit deferral + opt-in coalescing
+# --------------------------------------------------------------------------- #
+def _schedule(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    topic,
+    model_label,
+    pk,
+    data,
+    occurred_at,
+    serialize_error,
+    settings,
+    using="default",
+):
+    def run():
+        _deliver(topic, model_label, data, occurred_at, serialize_error, settings)
+
+    if not settings["DISPATCH_ON_COMMIT"]:
+        run()
+        return
+
+    connection = connections[using]
+    if settings["COALESCE_EVENTS"] and connection.in_atomic_block:
+        # Collapse repeated emissions of the same (topic, object) within this
+        # commit window into a single delivery (spec D4). Only meaningful inside
+        # a transaction; in autocommit each emission is its own window.
+        key = (topic, model_label, pk)
+        _coalesce_buffer(connection, using)[key] = run
+        return
+
+    transaction.on_commit(run, using=using)
+
+
+def _coalesce_buffer(connection, using):
+    # A per-transaction dict of {coalesce_key: delivery}. A single flush is
+    # registered on commit; a rolled-back transaction discards its on_commit
+    # callbacks, and an empty run_on_commit list signals a fresh window.
+    # pylint: disable=protected-access
+    buffer = getattr(connection, "_django_webhook_coalesce", None)
+    if buffer is None or not connection.run_on_commit:
+        buffer = {}
+        connection._django_webhook_coalesce = buffer
+
+        def flush():
+            deliveries = list(buffer.values())
+            connection._django_webhook_coalesce = None
+            for deliver in deliveries:
+                deliver()
+
+        transaction.on_commit(flush, using=using)
+    return buffer
+
+
+# --------------------------------------------------------------------------- #
+# Delivery production (runs after commit; fully isolated)
+# --------------------------------------------------------------------------- #
+def _deliver(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    topic, model_label, data, occurred_at, serialize_error, settings
+):
+    """
+    Build and enqueue a delivery for every matching subscription. Each
+    subscription is isolated: a failure to produce or enqueue one delivery is
+    recorded and never raised (spec A2). ``data`` is the already-serialized
+    snapshot captured at emission.
+    """
+    try:
+        webhook_ids = find_webhooks(topic)
+    except Exception:  # pylint: disable=broad-except
+        # A subscriber lookup failure must not surface to the writer.
+        logger.exception("Webhook subscriber lookup failed for topic %s", topic)
+        return
+
+    encoder_cls = settings["PAYLOAD_ENCODER_CLASS"]
+
+    for webhook_id, webhook_uuid, webhook_url in webhook_ids:
+        _deliver_one(
+            webhook_id=webhook_id,
+            webhook_uuid=webhook_uuid,
+            webhook_url=webhook_url,
+            topic=topic,
+            model_label=model_label,
+            data=data,
+            occurred_at=occurred_at,
+            serialize_error=serialize_error,
+            encoder_cls=encoder_cls,
+            settings=settings,
+        )
+
+
+def _deliver_one(  # pylint: disable=too-many-arguments,too-many-locals
+    *,
+    webhook_id,
+    webhook_uuid,
+    webhook_url,
+    topic,
+    model_label,
+    data,
+    occurred_at,
+    serialize_error,
+    encoder_cls,
+    settings,
+):
+    # pylint: disable=import-outside-toplevel,broad-except
+    import json
+    import uuid as uuid_lib
+
+    from .models import WebhookEvent
+    from .tasks import fire_webhook
+
+    store_events = settings["STORE_EVENTS"]
+    event = None
+    try:
+        event_id = uuid_lib.uuid4()
+        envelope = dict(
+            event_id=str(event_id),
+            occurred_at=occurred_at.isoformat() if occurred_at else None,
+            object=data,
+            topic=topic,
+            object_type=model_label,
+            webhook_uuid=str(webhook_uuid),
+        )
+        payload, encode_error = encode_payload(envelope, encoder_cls)
+        error = serialize_error or encode_error
+
+        if store_events:
+            # Store the encoded-then-parsed envelope (plain JSON primitives) so
+            # the WebhookEvent.object JSONField's own encoder never re-encounters
+            # a value the payload encoder had to handle specially.
+            event = WebhookEvent.objects.create(
+                webhook_id=webhook_id,
+                event_id=event_id,
+                object=json.loads(payload),
+                object_type=model_label,
+                status=states.PENDING,
+                occurred_at=occurred_at,
+                url=webhook_url or "",
+                topic=topic,
+                # A note on any degradation (unserializable value, fallback
+                # encoding). Status still reflects the delivery outcome; this
+                # records that the payload could not be fully represented so the
+                # loss is never silent (principle #3).
+                error=error,
+            )
+
+        fire_webhook.delay(
+            webhook_id,
+            payload,
+            topic=topic,
+            object_type=model_label,
+            webhook_event_id=event.id if event is not None else None,
+        )
+    except Exception as ex:
+        # The delivery could not even be enqueued (e.g. broker outage). Mark the
+        # already-created row failed (never a stranded PENDING) or, if the row
+        # itself could not be created, record a standalone failure — rather than
+        # raising into the writer.
+        logger.exception(
+            "Failed to enqueue webhook delivery for webhook_id=%s topic=%s",
+            webhook_id,
+            topic,
+        )
+        if event is not None:
+            WebhookEvent.objects.filter(id=event.id).update(
+                status=states.FAILURE, error=f"enqueue error: {ex!r}"
+            )
+        else:
+            _record_enqueue_failure(webhook_id, topic, model_label, occurred_at, ex)
+
+
+def _record_enqueue_failure(webhook_id, topic, model_label, occurred_at, ex):
+    # pylint: disable=import-outside-toplevel,broad-except
+    from .models import Webhook, WebhookEvent
+
+    settings = get_settings()
+    if not settings["STORE_EVENTS"]:
+        return
+    try:
+        url = (
+            Webhook.objects.filter(id=webhook_id).values_list("url", flat=True).first()
+        )
+        WebhookEvent.objects.create(
+            webhook_id=webhook_id,
+            object={},
+            object_type=model_label,
+            status=states.FAILURE,
+            occurred_at=occurred_at,
+            url=url or "",
+            topic=topic,
+            error=f"enqueue error: {ex!r}",
+        )
+    except Exception:
+        logger.exception("Failed to record webhook enqueue failure")
+
+
+# --------------------------------------------------------------------------- #
+# Subscription lookup (public — spec E3)
+# --------------------------------------------------------------------------- #
+def find_webhooks(topic: str):
+    """
+    Return ``(id, uuid)`` pairs for every active subscription to ``topic``.
+
+    Cached for a short TTL unless ``DJANGO_WEBHOOK["USE_CACHE"]`` is off, so a
+    burst of writes does not hammer the database.
+    """
+    if get_settings()["USE_CACHE"]:
+        return _query_webhooks_cached(topic)
+    return _query_webhooks(topic)
+
+
+@cache(ttl=timedelta(minutes=1))
+def _query_webhooks_cached(topic: str):
+    return _query_webhooks(topic)
+
+
+def _query_webhooks(topic: str):
+    from .models import Webhook  # pylint: disable=import-outside-toplevel
+
+    return list(
+        Webhook.objects.filter(active=True, topics__name=topic).values_list(
+            "id", "uuid", "url"
+        )
+    )

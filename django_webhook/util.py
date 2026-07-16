@@ -9,18 +9,21 @@ def cache(ttl=timedelta(minutes=1)):
     """
 
     def wrap(func):
-        cache = {}  # type: ignore
+        store = {}  # type: ignore
 
         @functools.wraps(func)
         def wrapped(*args, **kw):
             now = datetime.now()
             # see lru_cache for fancier alternatives
             key = tuple(args), frozenset(kw.items())
-            if key not in cache or now - cache[key][0] > ttl:
+            if key not in store or now - store[key][0] > ttl:
                 value = func(*args, **kw)
-                cache[key] = (now, value)
-            return cache[key][1]
+                store[key] = (now, value)
+            return store[key][1]
 
+        # Exposed so callers (and tests) can invalidate the cache explicitly.
+        wrapped.cache = store  # type: ignore[attr-defined]
+        wrapped.cache_clear = store.clear  # type: ignore[attr-defined]
         return wrapped
 
     return wrap

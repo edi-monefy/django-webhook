@@ -1,9 +1,15 @@
-from django.contrib import admin
+import logging
+
+from django.contrib import admin, messages
 from django.contrib.admin import TabularInline
+from django.utils.module_loading import import_string
 
 from django_webhook.models import Webhook, WebhookEvent, WebhookSecret
 
 from .forms import WebhookForm
+from .settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class WebhookSecretInline(TabularInline):
@@ -12,7 +18,6 @@ class WebhookSecretInline(TabularInline):
     extra = 0
 
 
-@admin.register(Webhook)
 class WebhookAdmin(admin.ModelAdmin):
     form = WebhookForm
     list_display = (
@@ -26,23 +31,68 @@ class WebhookAdmin(admin.ModelAdmin):
     inlines = [WebhookSecretInline]
 
 
-@admin.register(WebhookEvent)
 class WebhookEventAdmin(admin.ModelAdmin):
-    list_display = ("url", "status", "created", "topic")
+    list_display = ("event_id", "url", "status", "topic", "occurred_at", "created")
     list_filter = ("webhook", "status", "topic")
-    search_fields = ("webhook", "status", "topic")
+    search_fields = ("event_id", "url", "status", "topic")
     readonly_fields = (
         "webhook",
+        "event_id",
         "url",
         "status",
+        "occurred_at",
         "created",
         "topic",
         "object_type",
         "object",
+        "error",
     )
+    actions = ["resend_selected"]
 
     def has_add_permission(self, request):
         return False
 
-    def has_change_permission(self, request, obj=None):
-        return False
+    # Rows remain fully read-only (every field is in ``readonly_fields``), but
+    # change permission is left intact so the re-send action (spec B4) and the
+    # detail view are reachable.
+
+    @admin.action(description="Re-send selected webhook deliveries")
+    def resend_selected(self, request, queryset):
+        count = queryset.resend()
+        self.message_user(
+            request,
+            f"Re-enqueued {count} webhook deliver{'y' if count == 1 else 'ies'}.",
+            level=messages.SUCCESS,
+        )
+
+
+def _resolve_admin_site():
+    """
+    Resolve the configured admin site, or ``None`` to skip registration.
+
+    ``DJANGO_WEBHOOK["ADMIN_SITE"]`` may be an ``AdminSite`` instance, a dotted
+    path to one, or ``None`` / ``"none"`` to opt out entirely (spec E1).
+    """
+    site = get_settings().get("ADMIN_SITE")
+    if site is None or site == "none":
+        return None
+    if isinstance(site, str):
+        return import_string(site)
+    return site
+
+
+def register_admin():
+    """
+    Register the package's models on the configured admin site. Idempotent and
+    safe to call from ``AppConfig.ready``.
+    """
+    site = _resolve_admin_site()
+    if site is None:
+        return
+    for model, model_admin in (
+        (Webhook, WebhookAdmin),
+        (WebhookEvent, WebhookEventAdmin),
+    ):
+        if model in site._registry:  # pylint: disable=protected-access
+            site.unregister(model)
+        site.register(model, model_admin)
