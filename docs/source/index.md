@@ -41,7 +41,7 @@ django-webhook-request-timestamp: 1697818014
 Each event carries a unique `event_id` and the `occurred_at` time of the change (both stable across
 retries), so at-least-once redeliveries are safe to dedup and order.
 
-### 🔥 Features
+## 🔥 Features
 - Automatically sends webhooks on model changes
 - Dispatch only after the database transaction commits — a rollback never publishes
 - Event production is isolated from the writer: a serializer or broker error can never fail `save()`
