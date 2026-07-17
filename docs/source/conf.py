@@ -2,9 +2,9 @@
 
 # -- Project information
 
-project = "django-webhook"
-copyright = "2024, Dani Hodovic"  # pylint: disable=redefined-builtin
-author = "Dani Hodovic"
+project = "django-webhook2"
+copyright = "2023, Dani Hodovic; 2026, Eduard Luca"  # pylint: disable=redefined-builtin
+author = "Eduard Luca"
 
 release = "0.9.0"
 version = "0.9.0"

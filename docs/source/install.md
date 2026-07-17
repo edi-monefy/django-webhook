@@ -29,7 +29,7 @@ class Product(models.Model):
 Install the python package
 
 ```sh
-pip install django-webhook
+pip install django-webhook2
 ```
 
 Add the app to your settings.py and whitelist models for which you want to send webhooks

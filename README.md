@@ -2,6 +2,11 @@
 
 A plug-and-play Django app for sending outgoing webhooks on model changes.
 
+> Published on PyPI as [`django-webhook2`](https://pypi.org/project/django-webhook2/). This is a
+> reliability-focused fork of [`django-webhook`](https://github.com/danihodovic/django-webhook) by
+> Dani Hodovic. The Python import path is unchanged (`django_webhook`), so it remains a drop-in
+> replacement — install with `pip install django-webhook2`.
+
 Django has a built-in signal system which allows programmers to schedule functions to be executed on
 model changes. django-webhook leverages the signal system together with Celery to send HTTP requests
 when models change.
@@ -58,7 +63,7 @@ django-webhook-request-timestamp: 1697818014
 
 ### 📖 Documentation
 
-https://django-webhook.readthedocs.io
+https://django-webhook2.readthedocs.io
 
 
 ### Contributors
