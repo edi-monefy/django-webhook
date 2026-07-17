@@ -2,12 +2,17 @@
 
 # -- Project information
 
+import tomllib
+from pathlib import Path
+
 project = "django-webhook2"
 copyright = "2023, Dani Hodovic; 2026, Eduard Luca"  # pylint: disable=redefined-builtin
 author = "Eduard Luca"
 
-release = "0.9.0"
-version = "0.9.0"
+# Single source of truth: read the version from pyproject.toml.
+_pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+release = tomllib.loads(_pyproject.read_text())["project"]["version"]
+version = release
 
 # -- General configuration
 

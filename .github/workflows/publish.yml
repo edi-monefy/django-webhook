@@ -28,12 +28,17 @@ jobs:
       - name: Install Poetry
         uses: snok/install-poetry@v1
 
-      - name: Set package version from the tag
+      - name: Verify the tag matches pyproject.toml
         run: |
           # Strip an optional leading "v" (v1.2.3 -> 1.2.3).
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "Publishing version $VERSION"
-          poetry version "$VERSION"
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(poetry version -s)"
+          echo "Tag: $TAG   pyproject: $PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag '$TAG' does not match pyproject.toml version '$PKG'." \
+                 "Bump the version, commit, then tag the same version." >&2
+            exit 1
+          fi
 
       - name: Build
         run: poetry build
