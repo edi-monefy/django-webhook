@@ -1,0 +1,42 @@
+---
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      # Publish on version tags, with or without a leading "v".
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/django-webhook2/
+    permissions:
+      # Required for PyPI Trusted Publishing (OIDC). No API token needed.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+
+      - name: Set package version from the tag
+        run: |
+          # Strip an optional leading "v" (v1.2.3 -> 1.2.3).
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Publishing version $VERSION"
+          poetry version "$VERSION"
+
+      - name: Build
+        run: poetry build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
