@@ -92,10 +92,12 @@ django-webhook-signature-v1:
 django-webhook-request-timestamp: 1697818014
 
 {
+  "event_id": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+  "occurred_at": "2023-10-20T18:06:54+00:00",
   "topic": "core.Product/create",
   "object": {
     "id": 3,
-    "name": "test",
+    "name": "test"
   },
   "object_type": "core.Product",
   "webhook_uuid": "5e2ee3ba-905e-4360-94bf-18ef21c0e844"

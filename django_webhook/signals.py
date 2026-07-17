@@ -1,21 +1,23 @@
 # pylint: disable=redefined-builtin
-import json
-from datetime import timedelta
-
 from django.apps import apps
 from django.db import models
 from django.db.models.signals import ModelSignal, post_delete, post_save
-from django.forms import model_to_dict
 
-from django_webhook.models import Webhook
-
+from .dispatch import CREATE, DELETE, UPDATE, emit_event, find_webhooks
+from .serializers import default_serialize
 from .settings import get_settings
-from .tasks import fire_webhook
-from .util import cache
 
-CREATE = "create"
-UPDATE = "update"
-DELETE = "delete"
+# Re-exported for backwards compatibility. The canonical implementations now
+# live in ``dispatch`` (subscription lookup) and ``serializers`` (payload).
+__all__ = [
+    "CREATE",
+    "UPDATE",
+    "DELETE",
+    "SignalListener",
+    "connect_signals",
+    "model_dict",
+    "find_webhooks",
+]
 
 
 class SignalListener:
@@ -41,24 +43,10 @@ class SignalListener:
             case "post_delete":
                 action_type = DELETE
 
-        topic = f"{self.model_label}/{action_type}"
-        webhook_ids = _find_webhooks(topic)
-        encoder_cls = get_settings()["PAYLOAD_ENCODER_CLASS"]
-
-        for id, uuid in webhook_ids:
-            payload_dict = dict(
-                object=model_dict(instance),
-                topic=topic,
-                object_type=self.model_label,
-                webhook_uuid=str(uuid),
-            )
-            payload = json.dumps(payload_dict, cls=encoder_cls)
-            fire_webhook.delay(
-                id,
-                payload,
-                topic=topic,
-                object_type=self.model_label,
-            )
+        # Delegate to the shared dispatch seam. It defers to transaction commit,
+        # isolates payload production from the writer, and never re-broadcasts a
+        # model signal to trigger itself.
+        emit_event(instance, action_type)
 
     def connect(self):
         self.signal.connect(
@@ -88,12 +76,10 @@ def connect_signals():
 
 def model_dict(model):
     """
-    Returns the model instance as a dict, nested values for related models.
+    Deprecated alias for the default serializer. Retained so existing imports
+    keep working; new code should use ``django_webhook.serializers``.
     """
-    fields = {
-        field.name: field.value_from_object(model) for field in model._meta.fields
-    }
-    return model_to_dict(model, fields=fields)  # type: ignore
+    return default_serialize(model)
 
 
 def _active_models():
@@ -108,28 +94,9 @@ def _active_models():
             model_class = apps.get_model(app_label, model_label)
         except LookupError:
             continue
+        # Never connect our own models: emitting on WebhookEvent (created on
+        # every delivery) would recurse forever. checks.py E04 also rejects this.
+        if model_class._meta.app_label == "django_webhook":
+            continue
         model_classes.append(model_class)
     return model_classes
-
-
-def _find_webhooks(topic: str):
-    """
-    In tests and for smaller setups we don't want to cache the query.
-    """
-    if get_settings()["USE_CACHE"]:
-        return _query_webhooks_cached(topic)
-    return _query_webhooks(topic)
-
-
-@cache(ttl=timedelta(minutes=1))
-def _query_webhooks_cached(topic: str):
-    """
-    Cache the calls to the database so we're not polling the db anytime a signal is triggered.
-    """
-    return _query_webhooks(topic)
-
-
-def _query_webhooks(topic: str):
-    return Webhook.objects.filter(active=True, topics__name=topic).values_list(
-        "id", "uuid"
-    )

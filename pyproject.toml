@@ -1,19 +1,26 @@
-[tool.poetry]
+[project]
 name = "django-webhook"
-version = "0.0.15"
-description = ""
-authors = ["Dani Hodovic <you@example.com>"]
+version = "0.9.0"
+description = "Send outgoing webhooks on Django model changes, reliably."
+authors = [{ name = "Dani Hodovic", email = "you@example.com" }]
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/danihodovic/django-webhook"
-documentation = "https://django-webhook.readthedocs.io/en/latest/"
 keywords = ["webhooks", "http", "microservices"]
+requires-python = ">=3.11,<4.0"
 classifiers = [
 	"Topic :: Internet :: WWW/HTTP",
 	"Topic :: System :: Distributed Computing",
 	"Framework :: Celery",
 	"Framework :: Django",
 ]
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/danihodovic/django-webhook"
+Documentation = "https://django-webhook.readthedocs.io/en/latest/"
+
+[tool.poetry]
+packages = [{ include = "django_webhook" }]
 
 [tool.black]
 skip_numeric_underscore_normalization = true
@@ -25,7 +32,6 @@ multi_line_output = 3
 skip = '.virtualenv,.venv,.poetry,.poetry-cache'
 
 [tool.poetry.dependencies]
-python = "^3.11"
 django = ">=4.0,<6.0"
 django-model-utils = "4.*"
 celery = "5.*"
@@ -47,7 +53,7 @@ mypy-extensions = "1.*"
 psycopg2 = "^2.9.9"
 ptpython = "3.*"
 pudb = "^2022.1.3"
-pylint = "^3.2.6"
+pylint = "^3.3.0"
 pylint-django = "2.*"
 pytest = "^8.3.2"
 pytest-celery = "^0.0.0"
@@ -61,8 +67,8 @@ types-requests = "^2.31.0.2"
 werkzeug = "^3.0.0"
 
 [build-system]
-requires = ["poetry>=0.12"]
-build-backend = "poetry.masonry.api"
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.coverage.run]
 omit = [
