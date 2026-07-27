@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
     retry_backoff_max=60 * 60,
     retry_jitter=False,
 )
-def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     self,
     webhook_id: int,
     payload: str,

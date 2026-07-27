@@ -3,6 +3,7 @@ import logging
 from django.apps import apps
 from django.contrib import admin, messages
 from django.contrib.admin import TabularInline
+from django.db.models import Count
 from django.utils.module_loading import import_string
 
 from django_webhook.models import (
@@ -85,13 +86,13 @@ class WebhookEventAdmin(admin.ModelAdmin):
     # detail view are reachable.
 
     def get_queryset(self, request):
-        from django.db.models import Count
+        return (
+            super().get_queryset(request).annotate(attempt_count_db=Count("attempts"))
+        )
 
-        return super().get_queryset(request).annotate(_attempt_count=Count("attempts"))
-
-    @admin.display(description="Attempts", ordering="_attempt_count")
+    @admin.display(description="Attempts", ordering="attempt_count_db")
     def attempt_count(self, obj):
-        return obj._attempt_count
+        return obj.attempt_count_db
 
     @admin.action(description="Re-send selected webhook deliveries")
     def resend_selected(self, request, queryset):
