@@ -5,7 +5,12 @@ from django.contrib import admin, messages
 from django.contrib.admin import TabularInline
 from django.utils.module_loading import import_string
 
-from django_webhook.models import Webhook, WebhookDeliveryAttempt, WebhookEvent, WebhookSecret
+from django_webhook.models import (
+    Webhook,
+    WebhookDeliveryAttempt,
+    WebhookEvent,
+    WebhookSecret,
+)
 
 from .forms import WebhookForm
 from .settings import DEFAULT_ADMIN_SITE, get_settings
@@ -46,7 +51,15 @@ class WebhookDeliveryAttemptInline(TabularInline):
 
 
 class WebhookEventAdmin(admin.ModelAdmin):
-    list_display = ("event_id", "url", "status", "topic", "occurred_at", "created", "attempt_count")
+    list_display = (
+        "event_id",
+        "url",
+        "status",
+        "topic",
+        "occurred_at",
+        "created",
+        "attempt_count",
+    )
     list_filter = ("webhook", "status", "topic")
     search_fields = ("event_id", "url", "status", "topic")
     readonly_fields = (
@@ -73,10 +86,12 @@ class WebhookEventAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         from django.db.models import Count
+
         return super().get_queryset(request).annotate(_attempt_count=Count("attempts"))
 
     def attempt_count(self, obj):
         return obj._attempt_count
+
     attempt_count.short_description = "Attempts"
     attempt_count.admin_order_field = "_attempt_count"
 

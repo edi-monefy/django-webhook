@@ -199,7 +199,9 @@ def test_each_retry_creates_its_own_attempt_row(settings, responses):
     assert all(a.status == states.FAILURE for a in attempts)
 
 
-def test_attempt_numbers_continue_sequentially_after_resend(settings, responses, mocker):
+def test_attempt_numbers_continue_sequentially_after_resend(
+    settings, responses, mocker
+):
     # After a resend the Celery retries counter resets to 0; attempt numbers
     # must still be globally sequential (4, 5, …) not reset to 1.
     settings.DJANGO_WEBHOOK = dict(

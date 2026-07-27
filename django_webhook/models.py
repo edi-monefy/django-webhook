@@ -183,7 +183,9 @@ class WebhookDeliveryAttempt(models.Model):
         ordering = ["attempt_number"]
 
     def __str__(self):
-        return f"event={self.event_id} attempt={self.attempt_number} status={self.status}"
+        return (
+            f"event={self.event_id} attempt={self.attempt_number} status={self.status}"
+        )
 
 
 def topics_from_settings():
