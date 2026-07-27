@@ -131,6 +131,33 @@ class WebhookEvent(models.Model):
     def __str__(self):
         return f"id={self.id} status={self.status} topic={self.topic}"
 
+    @property
+    def attempt_count(self):
+        return self.attempts.count()
+
+
+class WebhookDeliveryAttempt(models.Model):
+    event = models.ForeignKey(
+        WebhookEvent,
+        on_delete=models.CASCADE,
+        related_name="attempts",
+        editable=False,
+    )
+    attempt_number = models.PositiveIntegerField(editable=False)
+    status = models.CharField(
+        max_length=40,
+        choices=STATES,
+        editable=False,
+    )
+    error = models.TextField(null=True, blank=True, editable=False)
+    attempted_at = DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["attempt_number"]
+
+    def __str__(self):
+        return f"event={self.event_id} attempt={self.attempt_number} status={self.status}"
+
     def resend(self):
         """
         Re-enqueue this delivery for sending. Resets the row to ``PENDING`` and

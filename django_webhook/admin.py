@@ -5,7 +5,7 @@ from django.contrib import admin, messages
 from django.contrib.admin import TabularInline
 from django.utils.module_loading import import_string
 
-from django_webhook.models import Webhook, WebhookEvent, WebhookSecret
+from django_webhook.models import Webhook, WebhookDeliveryAttempt, WebhookEvent, WebhookSecret
 
 from .forms import WebhookForm
 from .settings import DEFAULT_ADMIN_SITE, get_settings
@@ -32,8 +32,21 @@ class WebhookAdmin(admin.ModelAdmin):
     inlines = [WebhookSecretInline]
 
 
+class WebhookDeliveryAttemptInline(TabularInline):
+    model = WebhookDeliveryAttempt
+    fields = ("attempt_number", "status", "error", "attempted_at")
+    readonly_fields = ("attempt_number", "status", "error", "attempted_at")
+    extra = 0
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
 class WebhookEventAdmin(admin.ModelAdmin):
-    list_display = ("event_id", "url", "status", "topic", "occurred_at", "created")
+    list_display = ("event_id", "url", "status", "topic", "occurred_at", "created", "attempt_count")
     list_filter = ("webhook", "status", "topic")
     search_fields = ("event_id", "url", "status", "topic")
     readonly_fields = (
@@ -48,6 +61,7 @@ class WebhookEventAdmin(admin.ModelAdmin):
         "object",
         "error",
     )
+    inlines = [WebhookDeliveryAttemptInline]
     actions = ["resend_selected"]
 
     def has_add_permission(self, request):
@@ -56,6 +70,10 @@ class WebhookEventAdmin(admin.ModelAdmin):
     # Rows remain fully read-only (every field is in ``readonly_fields``), but
     # change permission is left intact so the re-send action and the
     # detail view are reachable.
+
+    def attempt_count(self, obj):
+        return obj.attempts.count()
+    attempt_count.short_description = "Attempts"
 
     @admin.action(description="Re-send selected webhook deliveries")
     def resend_selected(self, request, queryset):

@@ -7,7 +7,7 @@ from django.utils import timezone
 from requests import Session
 from requests.exceptions import RequestException
 
-from django_webhook.models import Webhook, WebhookEvent
+from django_webhook.models import Webhook, WebhookDeliveryAttempt, WebhookEvent
 
 from .http import prepare_request
 from .settings import failed_retention_days, get_settings, succeeded_retention_days
@@ -66,6 +66,15 @@ def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-argu
     req = prepare_request(webhook, payload)  # type: ignore
     timeout = settings["REQUEST_TIMEOUT"]
 
+    attempt_number = (self.request.retries or 0) + 1
+    attempt = None
+    if webhook_event_id is not None:
+        attempt = WebhookDeliveryAttempt.objects.create(
+            event_id=webhook_event_id,
+            attempt_number=attempt_number,
+            status=states.PENDING,
+        )
+
     try:
         response = Session().send(req, timeout=timeout)
         response.raise_for_status()
@@ -79,14 +88,22 @@ def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-argu
             webhook_id,
             status_code,
         )
+        error = f"delivery failed: {ex!r} status_code={status_code}"
+        if attempt is not None:
+            attempt.status = states.FAILURE
+            attempt.error = error
+            attempt.save(update_fields=["status", "error"])
         if webhook_event_id is not None:
             _update_event(
                 webhook_event_id,
                 status=states.FAILURE,
-                error=f"delivery failed: {ex!r} status_code={status_code}",
+                error=error,
             )
         raise self.retry(exc=ex)
 
+    if attempt is not None:
+        attempt.status = states.SUCCESS
+        attempt.save(update_fields=["status"])
     if webhook_event_id is not None:
         _update_event(webhook_event_id, status=states.SUCCESS)
 
