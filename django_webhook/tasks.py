@@ -66,9 +66,14 @@ def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-argu
     req = prepare_request(webhook, payload)  # type: ignore
     timeout = settings["REQUEST_TIMEOUT"]
 
-    attempt_number = (self.request.retries or 0) + 1
     attempt = None
     if webhook_event_id is not None:
+        # Count existing attempts so the number is globally sequential across
+        # retries *and* manual resends. self.request.retries resets to 0 after a
+        # resend, so it would produce duplicate numbers; a DB count never does.
+        attempt_number = (
+            WebhookDeliveryAttempt.objects.filter(event_id=webhook_event_id).count() + 1
+        )
         attempt = WebhookDeliveryAttempt.objects.create(
             event_id=webhook_event_id,
             attempt_number=attempt_number,
