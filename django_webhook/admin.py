@@ -89,11 +89,9 @@ class WebhookEventAdmin(admin.ModelAdmin):
 
         return super().get_queryset(request).annotate(_attempt_count=Count("attempts"))
 
+    @admin.display(description="Attempts", ordering="_attempt_count")
     def attempt_count(self, obj):
         return obj._attempt_count
-
-    attempt_count.short_description = "Attempts"
-    attempt_count.admin_order_field = "_attempt_count"
 
     @admin.action(description="Re-send selected webhook deliveries")
     def resend_selected(self, request, queryset):
