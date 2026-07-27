@@ -71,9 +71,14 @@ class WebhookEventAdmin(admin.ModelAdmin):
     # change permission is left intact so the re-send action and the
     # detail view are reachable.
 
+    def get_queryset(self, request):
+        from django.db.models import Count
+        return super().get_queryset(request).annotate(_attempt_count=Count("attempts"))
+
     def attempt_count(self, obj):
-        return obj.attempts.count()
+        return obj._attempt_count
     attempt_count.short_description = "Attempts"
+    attempt_count.admin_order_field = "_attempt_count"
 
     @admin.action(description="Re-send selected webhook deliveries")
     def resend_selected(self, request, queryset):
