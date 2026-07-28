@@ -73,8 +73,12 @@ class WebhookEventAdmin(admin.ModelAdmin):
 
     @admin.action(description="Re-send selected webhook deliveries")
     def resend_selected(self, request, queryset):
+        # Counted before the re-send: the changelist queryset carries the
+        # active list_filter, so re-running it afterwards would not match the
+        # rows whose status the re-send just changed.
+        total = queryset.count()
         count = queryset.resend()
-        skipped = queryset.count() - count
+        skipped = total - count
         self.message_user(
             request,
             f"Re-enqueued {count} webhook deliver{'y' if count == 1 else 'ies'}."

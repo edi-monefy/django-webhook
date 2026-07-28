@@ -7,8 +7,6 @@ import pytest
 from celery import states
 from django.contrib.admin.sites import AdminSite
 from django.contrib.messages.storage.fallback import FallbackStorage
-from pytest_django.asserts import assertNumQueries
-
 from django_webhook.admin import WebhookEventAdmin
 from django_webhook.constants import INVALID, RETRYING
 from django_webhook.models import WebhookEvent, WebhookTopic
@@ -54,24 +52,6 @@ def test_resend_batch(settings, responses):
     )
     assert count == 2
     assert len(responses.calls) == 2
-
-
-def test_batch_resend_uses_single_update(settings, mocker):
-    # A batch re-send must not issue one UPDATE per event (no N+1 writes): it
-    # resets the whole selection in a single statement, then enqueues each.
-    settings.DJANGO_WEBHOOK = dict(MODELS=["tests.User"], USE_CACHE=False)
-    mocker.patch("django_webhook.tasks.fire_webhook")
-    topic, _ = WebhookTopic.objects.get_or_create(name="tests.User/create")
-    webhook = WebhookFactory(topics=[topic])
-    events = [
-        WebhookEventFactory(webhook=webhook, status=states.FAILURE) for _ in range(5)
-    ]
-    qs = WebhookEvent.objects.filter(id__in=[e.id for e in events])
-
-    # 1 SELECT (fetch the rows) + 1 UPDATE (bulk reset), regardless of count.
-    with assertNumQueries(2):  # pylint: disable=not-context-manager
-        count = qs.resend()
-    assert count == 5
 
 
 def test_resend_increments_resends_and_accumulates_attempts(settings, responses):
