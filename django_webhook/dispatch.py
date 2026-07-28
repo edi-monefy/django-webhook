@@ -82,10 +82,8 @@ def emit_events(instances, operation, *, occurred_at=None):
         # write to a secondary database dispatches on that database's commit.
         state = instance._state  # pylint: disable=protected-access
         using = state.db or DEFAULT_DB_ALIAS
-        # Serialize *now*, in the writer's call stack, so the snapshot reflects
-        # the state at the moment of change, and so a payload bug is attributable
-        # to the instance that caused it. Also correct on delete, where
-        # ``instance.pk`` is cleared before the on-commit callback would run.
+        # Serialize now, not on commit: captures the state at the moment of
+        # change, and ``instance.pk`` is cleared before on-commit runs.
         data, payload_error = serialize_instance(instance, model_label)
         if payload_error is None:
             payload_error = check_encodable(data, settings["PAYLOAD_ENCODER_CLASS"])

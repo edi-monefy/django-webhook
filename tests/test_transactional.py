@@ -138,8 +138,6 @@ def test_unencodable_value_records_invalid_and_delivers_nothing(
 
 @pytest.mark.django_db
 def test_strict_payload_raises_into_the_writer(settings):
-    # Development/CI opts in to loudness: the bug surfaces at the save that
-    # caused it, before any event exists.
     settings.DJANGO_WEBHOOK = dict(
         MODELS=["tests.User"],
         USE_CACHE=False,

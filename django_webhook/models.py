@@ -15,10 +15,7 @@ from .validators import validate_topic_model
 
 topic_regex = r"\w+\.\w+\/[create|update|delete]"
 
-# In flight with retries remaining.
 RETRYING = "RETRYING"
-# Payload could not be produced. Terminal, and deliberately not retryable or
-# re-sendable: recovery is to fix the code and re-emit from the source instance.
 INVALID = "INVALID"
 
 STATES = [

@@ -45,9 +45,6 @@ def _pending_event(webhook):
     ids=["connection-error", "timeout", "error-response"],
 )
 def test_all_failure_modes_record_and_retry(settings, responses, failure):
-    # Connection failure, timeout and error response must behave identically:
-    # record the failure and retry. With attempts remaining the row is RETRYING,
-    # never stranded PENDING and never a premature FAILURE.
     settings.DJANGO_WEBHOOK = dict(
         MODELS=["tests.User"], USE_CACHE=False, MAX_RETRIES=5
     )
