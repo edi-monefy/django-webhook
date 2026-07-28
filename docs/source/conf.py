@@ -25,6 +25,10 @@ extensions = [
     "myst_parser",
 ]
 
+# Generate anchors for h1-h3 so pages can link to a specific section of another
+# page (e.g. configuration.md#populating-topics). Off by default in MyST.
+myst_heading_anchors = 3
+
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
     "sphinx": ("https://www.sphinx-doc.org/en/master/", None),
