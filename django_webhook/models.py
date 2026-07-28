@@ -7,7 +7,6 @@ from django.core import validators
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from django.db.models.fields import DateTimeField
-from django.db.utils import OperationalError, ProgrammingError
 
 from django_webhook.settings import get_settings
 
@@ -170,7 +169,8 @@ def sync_topics(*, prune=True):
     Idempotently reconcile the ``WebhookTopic`` table with the configured
     models: create any missing topics and (optionally) delete topics no longer
     implied by settings. Safe to run at any point in the project lifecycle —
-    e.g. from the ``webhook_sync_topics`` management command.
+    it runs on ``post_migrate`` unless ``SYNC_TOPICS_ON_MIGRATE`` is off, and
+    can be invoked directly via the ``webhook_sync_topics`` command.
 
     Returns ``(created, deleted)`` counts.
     """
@@ -201,25 +201,3 @@ def sync_topics(*, prune=True):
         )
         logging.info("Adding topics: %s", sorted(to_create))
     return (len(to_create), deleted)
-
-
-def populate_topics_from_settings():
-    """
-    Startup helper: reconcile topics, but silently no-op when the database is
-    not yet available (e.g. before migrations, or during test DB setup). For a
-    reliable sync use :func:`sync_topics` / the ``webhook_sync_topics`` command.
-    """
-    try:
-        Webhook.objects.count()
-    except (OperationalError, ProgrammingError) as ex:
-        if "Connection refused" in ex.args[0]:
-            return
-        if "could not translate host name" in ex.args[0]:
-            return
-        if "no such table" in ex.args[0]:
-            return
-        if "relation" in ex.args[0] and "does not exist" in ex.args[0]:
-            return
-        raise ex
-
-    sync_topics()

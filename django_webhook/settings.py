@@ -42,6 +42,10 @@ defaults = dict(
     # Raise on a payload that cannot be produced, instead of recording it.
     # None -> settings.DEBUG. OR in your testing flag so CI raises too.
     STRICT_PAYLOAD=None,
+    # Reconcile the WebhookTopic table at the end of every ``migrate``. Turn off
+    # to own the timing yourself by running ``webhook_sync_topics`` as an
+    # explicit deploy step.
+    SYNC_TOPICS_ON_MIGRATE=True,
 )
 
 

@@ -1,7 +1,7 @@
 import pytest
 from django.core.validators import ValidationError  # type: ignore
 
-from django_webhook.models import WebhookTopic, populate_topics_from_settings
+from django_webhook.models import WebhookTopic, sync_topics
 
 pytestmark = pytest.mark.django_db
 
@@ -22,8 +22,8 @@ def test_validates_topic_name_in_models(settings):
         t.clean_fields()
 
 
-def test_populate_topics_from_settings(settings):
-    populate_topics_from_settings()
+def test_sync_topics_tracks_settings(settings):
+    sync_topics()
     assert list(
         WebhookTopic.objects.values_list("name", flat=True).order_by("name")
     ) == [
@@ -39,7 +39,7 @@ def test_populate_topics_from_settings(settings):
     ]
 
     settings.DJANGO_WEBHOOK["MODELS"] = ["tests.Country"]
-    populate_topics_from_settings()
+    sync_topics()
     assert list(
         WebhookTopic.objects.values_list("name", flat=True).order_by("name")
     ) == [

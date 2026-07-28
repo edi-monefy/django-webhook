@@ -74,6 +74,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 # CELERY_TASK_STORE_EAGER_RESULT = True
 CELERY_BROKER_URL = "redis://redis:6379/"
 
+# Topic sync is off during tests so the test database starts with an empty
+# WebhookTopic table; tests that care create the topics they need.
 DJANGO_WEBHOOK = dict(
-    MODELS=["tests.Country", "tests.User", "tests.ModelWithFileField"]
+    MODELS=["tests.Country", "tests.User", "tests.ModelWithFileField"],
+    SYNC_TOPICS_ON_MIGRATE=False,
 )

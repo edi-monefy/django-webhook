@@ -19,6 +19,10 @@ class WebhookSecretFactory(factory.django.DjangoModelFactory):
 class WebhookFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = Webhook
+        # The post-generation hooks below only write related rows (m2m adds and
+        # the secrets RelatedFactory), never fields on the instance, so the
+        # implicit re-save factory_boy is deprecating is not needed.
+        skip_postgeneration_save = True
 
     url = factory.Faker("url", schemes=["https"])
     active = True

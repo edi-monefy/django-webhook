@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from celery import states
@@ -14,7 +14,7 @@ from django_webhook.test_factories import (
     WebhookFactory,
     WebhookTopicFactory,
 )
-from tests.model_data import TEST_USER
+from tests.model_data import TEST_JOIN_DATE, TEST_LAST_ACTIVE, TEST_USER
 from tests.models import User
 
 pytestmark = pytest.mark.django_db
@@ -38,8 +38,8 @@ def test_creates_events_when_enabled(responses, django_capture_on_commit_callbac
         User.objects.create(
             name="Dani",
             email="dani@doo.com",
-            join_date=date(1970, 1, 1),
-            last_active=datetime(2000, 1, 1, 12, 0, 0),
+            join_date=TEST_JOIN_DATE,
+            last_active=TEST_LAST_ACTIVE,
         )
     assert WebhookEvent.objects.count() == 1
     event = WebhookEvent.objects.get()
@@ -82,8 +82,8 @@ def test_does_not_create_events_when_disabled(
         User.objects.create(
             name="Dani",
             email="dani@doo.com",
-            join_date=date(1970, 1, 1),
-            last_active=datetime(2000, 1, 1, 12, 0, 0),
+            join_date=TEST_JOIN_DATE,
+            last_active=TEST_LAST_ACTIVE,
         )
     assert WebhookEvent.objects.count() == 0
 
