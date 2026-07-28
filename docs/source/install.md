@@ -48,6 +48,11 @@ Run the migrations
 ./manage.py migrate
 ```
 
+`migrate` also creates the `WebhookTopic` rows implied by `MODELS` (one per model per operation),
+which is what you subscribe to below. See
+[Populating topics](./configuration.md#populating-topics) if you would rather control when that
+happens.
+
 ## Test outgoing webhooks
 
 Visit https://webhook.site to create an inbox for your webhooks. Copy the unique URL which will be

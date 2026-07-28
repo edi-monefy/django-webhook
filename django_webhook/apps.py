@@ -1,6 +1,13 @@
 # pylint: disable=import-outside-toplevel
 
 from django.apps import AppConfig
+from django.db.models.signals import post_migrate
+
+
+def sync_topics_after_migrate(**kwargs):
+    from django_webhook.models import sync_topics
+
+    sync_topics()
 
 
 class WebhooksConfig(AppConfig):
@@ -11,12 +18,15 @@ class WebhooksConfig(AppConfig):
         # pylint: disable=unused-import
         import django_webhook.checks
         from django_webhook.admin import register_admin
-        from django_webhook.models import populate_topics_from_settings
+        from django_webhook.settings import get_settings
         from django_webhook.signals import connect_signals
 
         connect_signals()
         register_admin()
-        # Best-effort topic population at startup. It silently no-ops when the DB
-        # is unavailable (e.g. before migrations); use the ``webhook_sync_topics``
-        # management command for a reliable, idempotent sync.
-        populate_topics_from_settings()
+
+        if get_settings()["SYNC_TOPICS_ON_MIGRATE"]:
+            post_migrate.connect(
+                sync_topics_after_migrate,
+                sender=self,
+                dispatch_uid="django_webhook.sync_topics_after_migrate",
+            )

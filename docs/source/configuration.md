@@ -8,6 +8,11 @@ DJANGO_WEBHOOK = dict(
     # Models to send webhooks for (required).
     MODELS=["core.Product", "users.User"],
 
+    # --- Topics ---
+    # Reconcile the WebhookTopic table with MODELS at the end of every migrate.
+    # Turn off to run ./manage.py webhook_sync_topics as an explicit deploy step.
+    SYNC_TOPICS_ON_MIGRATE=True,
+
     # --- Transactional integrity ---
     # Enqueue deliveries only after the surrounding transaction commits. On by
     # default; turn off only if your project never wraps writes in transactions.
@@ -178,12 +183,35 @@ the observer.
 
 ## Populating topics
 
-Topics are reconciled from `MODELS` at startup, but that step no-ops when the database is
-unavailable (e.g. before migrations). For a reliable, idempotent sync — in a deploy step or after
-migrations — run:
+Topics are reconciled from `MODELS` at the end of every `migrate`, on the `post_migrate` signal.
+The sync is idempotent: it creates topics implied by `MODELS` and prunes ones that are not. Since
+deploys generally run `migrate`, topics stay in step with settings without a separate step —
+`migrate` fires `post_migrate` even when there are no new migrations to apply.
+
+To take over the timing yourself, turn the automatic sync off:
+
+```python
+DJANGO_WEBHOOK = dict(
+    MODELS=["core.Product"],
+    SYNC_TOPICS_ON_MIGRATE=False,
+)
+```
+
+and run the equivalent sync wherever you want it in your deploy:
 
 ```sh
 ./manage.py webhook_sync_topics
+```
+
+The command takes `--no-prune` to keep topics that are no longer implied by `MODELS`. It is also
+useful ad hoc — after editing `MODELS` locally, for instance — with the automatic sync left on.
+
+```{note}
+Earlier versions reconciled topics from `AppConfig.ready()`, on every process start. That issued a
+database query before the app registry finished loading, which Django 5.2 reports as
+`RuntimeWarning: Accessing the database during app initialization is discouraged`. Topic sync now
+happens on `post_migrate` instead. If you relied on a process restart to pick up new topics, run
+`migrate` (or `webhook_sync_topics`) instead.
 ```
 
 ## Testing
