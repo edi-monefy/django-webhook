@@ -27,7 +27,7 @@ dynamic = ["dependencies"]
 
 [project.urls]
 Repository = "https://github.com/edi-monefy/django-webhook"
-Documentation = "https://django-webhook2.readthedocs.io/en/latest/"
+Documentation = "https://django-webhook2.readthedocs.io/en/stable/"
 Issues = "https://github.com/edi-monefy/django-webhook/issues"
 
 [tool.poetry]
