@@ -39,6 +39,9 @@ defaults = dict(
     # Opt-in: collapse multiple emissions of the same (subscription, topic,
     # object) within a single commit window into one delivery.
     COALESCE_EVENTS=False,
+    # Raise on a payload that cannot be produced, instead of recording it.
+    # None -> settings.DEBUG. OR in your testing flag so CI raises too.
+    STRICT_PAYLOAD=None,
 )
 
 
@@ -66,6 +69,20 @@ def succeeded_retention_days():
     if days is None:
         days = settings.get("EVENTS_RETENTION_DAYS")
     return days
+
+
+def strict_payload():
+    """
+    Whether payload production failures raise. Falls back to ``settings.DEBUG``
+    when not set explicitly.
+    """
+    # pylint: disable=import-outside-toplevel
+    from django.conf import settings
+
+    strict = get_settings().get("STRICT_PAYLOAD")
+    if strict is None:
+        return bool(settings.DEBUG)
+    return bool(strict)
 
 
 def failed_retention_days():

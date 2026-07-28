@@ -1,15 +1,14 @@
 """
 Serializer behaviour: complete snapshots, reachable m2m, pluggable per-model /
-global serializers, and safe encoder degradation.
+global serializers, and payload failures that never produce a deliverable.
 """
-
-import json
 
 import pytest
 from django.core.serializers.json import DjangoJSONEncoder
 
 from django_webhook.serializers import (
-    SafeFallbackEncoder,
+    PayloadError,
+    check_encodable,
     default_serialize,
     encode_payload,
     get_serializer,
@@ -74,17 +73,38 @@ def _raising_serializer(instance):
     raise ValueError("boom")
 
 
-def test_serializer_failure_degrades_to_minimal_snapshot(settings):
-    # A serializer that raises must not lose the delivery: it degrades to a
-    # minimal snapshot with a recorded error.
+def test_serializer_failure_produces_no_payload(settings):
+    settings.DJANGO_WEBHOOK = dict(
+        MODELS=["tests.Article"],
+        SERIALIZER_CLASS="tests.test_serializers._raising_serializer",
+        STRICT_PAYLOAD=False,
+    )
+    article = Article.objects.create(title="x")
+    data, error = serialize_instance(article, "tests.Article")
+    assert data is None
+    assert "serializer error" in error
+
+
+def test_serializer_failure_raises_when_strict(settings):
+    settings.DJANGO_WEBHOOK = dict(
+        MODELS=["tests.Article"],
+        SERIALIZER_CLASS="tests.test_serializers._raising_serializer",
+        STRICT_PAYLOAD=True,
+    )
+    article = Article.objects.create(title="x")
+    with pytest.raises(PayloadError):
+        serialize_instance(article, "tests.Article")
+
+
+def test_strict_payload_defaults_to_debug(settings):
+    settings.DEBUG = True
     settings.DJANGO_WEBHOOK = dict(
         MODELS=["tests.Article"],
         SERIALIZER_CLASS="tests.test_serializers._raising_serializer",
     )
     article = Article.objects.create(title="x")
-    data, error = serialize_instance(article, "tests.Article")
-    assert data == {"pk": article.pk}
-    assert "serializer error" in error
+    with pytest.raises(PayloadError):
+        serialize_instance(article, "tests.Article")
 
 
 class _Unencodable:  # pylint: disable=too-few-public-methods
@@ -92,17 +112,27 @@ class _Unencodable:  # pylint: disable=too-few-public-methods
         return "<unencodable>"
 
 
-def test_encode_payload_falls_back_without_omitting_values():
-    # A value the configured encoder cannot represent is coerced to a visible
-    # repr rather than silently dropped, and the failure is reported.
-    envelope = {"object": {"weird": _Unencodable()}}
-    payload, error = encode_payload(envelope, DjangoJSONEncoder)
+def test_check_encodable_reports_unencodable_values(settings):
+    settings.DJANGO_WEBHOOK = dict(MODELS=["tests.Article"], STRICT_PAYLOAD=False)
+    error = check_encodable({"weird": _Unencodable()}, DjangoJSONEncoder)
     assert error is not None and "encoding error" in error
-    assert json.loads(payload)["object"]["weird"] == "<unencodable>"
 
 
-def test_safe_fallback_encoder_never_raises():
-    assert (
-        json.loads(json.dumps({"x": _Unencodable()}, cls=SafeFallbackEncoder))["x"]
-        == "<unencodable>"
+def test_check_encodable_passes_clean_data(settings):
+    settings.DJANGO_WEBHOOK = dict(MODELS=["tests.Article"], STRICT_PAYLOAD=False)
+    assert check_encodable({"title": "ok"}, DjangoJSONEncoder) is None
+
+
+def test_check_encodable_raises_when_strict(settings):
+    settings.DJANGO_WEBHOOK = dict(MODELS=["tests.Article"], STRICT_PAYLOAD=True)
+    with pytest.raises(PayloadError):
+        check_encodable({"weird": _Unencodable()}, DjangoJSONEncoder)
+
+
+def test_encode_payload_reports_failure_without_a_fallback(settings):
+    settings.DJANGO_WEBHOOK = dict(MODELS=["tests.Article"], STRICT_PAYLOAD=False)
+    payload, error = encode_payload(
+        {"object": {"weird": _Unencodable()}}, DjangoJSONEncoder
     )
+    assert payload is None
+    assert error is not None and "encoding error" in error

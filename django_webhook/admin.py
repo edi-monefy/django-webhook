@@ -33,18 +33,32 @@ class WebhookAdmin(admin.ModelAdmin):
 
 
 class WebhookEventAdmin(admin.ModelAdmin):
-    list_display = ("event_id", "url", "status", "topic", "occurred_at", "created")
+    list_display = (
+        "event_id",
+        "url",
+        "status",
+        "attempts",
+        "resends",
+        "topic",
+        "occurred_at",
+        "delivered_at",
+    )
     list_filter = ("webhook", "status", "topic")
-    search_fields = ("event_id", "url", "status", "topic")
+    search_fields = ("event_id", "url", "status", "topic", "object_pk")
     readonly_fields = (
         "webhook",
         "event_id",
         "url",
         "status",
+        "attempts",
+        "resends",
         "occurred_at",
         "created",
+        "last_attempt_at",
+        "delivered_at",
         "topic",
         "object_type",
+        "object_pk",
         "object",
         "error",
     )
@@ -60,10 +74,17 @@ class WebhookEventAdmin(admin.ModelAdmin):
     @admin.action(description="Re-send selected webhook deliveries")
     def resend_selected(self, request, queryset):
         count = queryset.resend()
+        skipped = queryset.count() - count
         self.message_user(
             request,
-            f"Re-enqueued {count} webhook deliver{'y' if count == 1 else 'ies'}.",
-            level=messages.SUCCESS,
+            f"Re-enqueued {count} webhook deliver{'y' if count == 1 else 'ies'}."
+            + (
+                f" Skipped {skipped} that are still in flight, have no "
+                "subscription, or have no deliverable payload."
+                if skipped
+                else ""
+            ),
+            level=messages.SUCCESS if count else messages.WARNING,
         )
 
 
