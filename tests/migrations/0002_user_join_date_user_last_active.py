@@ -20,7 +20,9 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="user",
             name="last_active",
-            field=models.DateTimeField(default=datetime.datetime(1970, 1, 1, 0, 0)),
+            field=models.DateTimeField(
+                default=datetime.datetime(1970, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)
+            ),
             preserve_default=False,
         ),
     ]
