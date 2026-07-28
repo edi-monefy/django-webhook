@@ -7,8 +7,9 @@ import pytest
 from celery import states
 from django.db import transaction
 
-from django_webhook.models import INVALID, WebhookEvent
-from django_webhook.serializers import PayloadError
+from django_webhook.constants import INVALID
+from django_webhook.exceptions import PayloadError
+from django_webhook.models import WebhookEvent
 from django_webhook.test_factories import WebhookFactory, WebhookTopicFactory
 from tests.model_data import TEST_JOIN_DATE, TEST_LAST_ACTIVE
 from tests.models import User

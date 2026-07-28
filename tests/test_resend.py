@@ -10,7 +10,8 @@ from django.contrib.messages.storage.fallback import FallbackStorage
 from pytest_django.asserts import assertNumQueries
 
 from django_webhook.admin import WebhookEventAdmin
-from django_webhook.models import INVALID, RETRYING, WebhookEvent, WebhookTopic
+from django_webhook.constants import INVALID, RETRYING
+from django_webhook.models import WebhookEvent, WebhookTopic
 from django_webhook.tasks import resend_webhook_event, resend_webhook_events
 from django_webhook.test_factories import WebhookEventFactory, WebhookFactory
 

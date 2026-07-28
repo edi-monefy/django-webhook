@@ -27,13 +27,10 @@ import logging
 
 from django.utils.module_loading import import_string
 
+from .exceptions import PayloadError
 from .settings import get_settings, strict_payload
 
 logger = logging.getLogger(__name__)
-
-
-class PayloadError(Exception):
-    """Raised, under ``STRICT_PAYLOAD``, when a payload cannot be produced."""
 
 
 def default_serialize(instance):

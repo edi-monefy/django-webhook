@@ -11,7 +11,8 @@ from celery.exceptions import MaxRetriesExceededError, Retry
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import RequestException, Timeout
 
-from django_webhook.models import RETRYING, WebhookEvent
+from django_webhook.constants import RETRYING
+from django_webhook.models import WebhookEvent
 from django_webhook.tasks import fire_webhook, retry_countdown
 from django_webhook.test_factories import (
     WebhookEventFactory,

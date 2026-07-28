@@ -9,7 +9,8 @@ from django.utils import timezone
 from requests import Session
 from requests.exceptions import RequestException
 
-from django_webhook.models import RETRYING, TERMINAL_STATES, Webhook, WebhookEvent
+from django_webhook.constants import RETRYING, TERMINAL_STATES
+from django_webhook.models import Webhook, WebhookEvent
 
 from .http import prepare_request
 from .settings import failed_retention_days, get_settings, succeeded_retention_days

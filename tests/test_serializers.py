@@ -6,8 +6,8 @@ global serializers, and payload failures that never produce a deliverable.
 import pytest
 from django.core.serializers.json import DjangoJSONEncoder
 
+from django_webhook.exceptions import PayloadError
 from django_webhook.serializers import (
-    PayloadError,
     check_encodable,
     default_serialize,
     encode_payload,

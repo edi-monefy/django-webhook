@@ -11,23 +11,9 @@ from django.db.utils import OperationalError, ProgrammingError
 
 from django_webhook.settings import get_settings
 
+from .constants import RESENDABLE_STATES, STATES, TOPIC_REGEX
+from .querysets import WebhookEventQuerySet
 from .validators import validate_topic_model
-
-topic_regex = r"\w+\.\w+\/[create|update|delete]"
-
-RETRYING = "RETRYING"
-INVALID = "INVALID"
-
-STATES = [
-    (states.PENDING, states.PENDING),
-    (RETRYING, RETRYING),
-    (states.FAILURE, states.FAILURE),
-    (states.SUCCESS, states.SUCCESS),
-    (INVALID, INVALID),
-]
-
-RESENDABLE_STATES = [states.SUCCESS, states.FAILURE]
-TERMINAL_STATES = [states.SUCCESS, states.FAILURE, INVALID]
 
 
 class Webhook(models.Model):
@@ -52,7 +38,7 @@ class WebhookTopic(models.Model):  # type: ignore
         unique=True,
         validators=[
             validators.RegexValidator(
-                topic_regex, message="Topic must match: " + topic_regex
+                TOPIC_REGEX, message="Topic must match: " + TOPIC_REGEX
             ),
             validate_topic_model,
         ],
@@ -75,47 +61,6 @@ class WebhookSecret(models.Model):
         validators=[validators.MinLengthValidator(12)],
     )
     created = DateTimeField(auto_now_add=True)
-
-
-class WebhookEventQuerySet(models.QuerySet):
-    def failed(self):
-        """
-        Deliveries that exhausted their retries. Safe to hand straight to
-        :meth:`resend`.
-        """
-        return self.filter(status=states.FAILURE)
-
-    def succeeded(self):
-        return self.filter(status=states.SUCCESS)
-
-    def invalid(self):
-        return self.filter(status=INVALID)
-
-    def unrecovered(self):
-        """
-        Failed deliveries plus unproducible payloads. For retention, which purges
-        both on the same window; re-sending uses :meth:`failed` only.
-        """
-        return self.filter(status__in=[states.FAILURE, INVALID])
-
-    def resend(self):
-        """
-        Re-enqueue every delivery in this queryset with a single status update
-        (plus one task per event). Rows whose subscription was deleted, whose
-        payload was never produced, or whose delivery is still in flight are
-        skipped. Returns the number re-fired.
-        """
-        resendable = list(
-            self.exclude(webhook_id__isnull=True).filter(status__in=RESENDABLE_STATES)
-        )
-        if not resendable:
-            return 0
-        WebhookEvent.objects.filter(id__in=[e.id for e in resendable]).update(
-            status=states.PENDING, error=None, resends=models.F("resends") + 1
-        )
-        for event in resendable:
-            event._enqueue_delivery()  # type: ignore[attr-defined]  # pylint: disable=protected-access
-        return len(resendable)
 
 
 class WebhookEvent(models.Model):

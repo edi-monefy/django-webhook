@@ -14,9 +14,9 @@ models and therefore needs the app registry to be ready.
 
 from .dispatch import CREATE, DELETE, UPDATE, emit_event, emit_events, find_webhooks
 from .http import prepare_request, sign_payload
+from .constants import INVALID, RETRYING
+from .exceptions import PayloadError
 from .models import (
-    INVALID,
-    RETRYING,
     Webhook,
     WebhookEvent,
     WebhookSecret,
@@ -24,8 +24,8 @@ from .models import (
     sync_topics,
     topics_from_settings,
 )
+from .querysets import WebhookEventQuerySet
 from .serializers import (
-    PayloadError,
     check_encodable,
     default_serialize,
     encode_payload,
@@ -64,6 +64,7 @@ __all__ = [
     # Models
     "Webhook",
     "WebhookEvent",
+    "WebhookEventQuerySet",
     "WebhookSecret",
     "WebhookTopic",
     # Settings

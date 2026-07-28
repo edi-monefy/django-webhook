@@ -6,7 +6,8 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.test import override_settings
 from django.utils import timezone
 
-from django_webhook.models import INVALID, RETRYING, WebhookEvent
+from django_webhook.constants import INVALID, RETRYING
+from django_webhook.models import WebhookEvent
 from django_webhook.tasks import clear_webhook_events
 from django_webhook.test_factories import (
     WebhookEventFactory,
