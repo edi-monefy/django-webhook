@@ -3,14 +3,17 @@ Delivery reliability: every failure mode retries and records, requests carry a
 timeout, and deliveries reach a terminal recorded status.
 """
 
+from types import SimpleNamespace
+
 import pytest
 from celery import states
 from celery.exceptions import MaxRetriesExceededError, Retry
 from requests.exceptions import ConnectionError as RequestsConnectionError
-from requests.exceptions import Timeout
+from requests.exceptions import RequestException, Timeout
 
+from django_webhook.constants import RETRYING
 from django_webhook.models import WebhookEvent
-from django_webhook.tasks import fire_webhook
+from django_webhook.tasks import fire_webhook, retry_countdown
 from django_webhook.test_factories import (
     WebhookEventFactory,
     WebhookFactory,
@@ -42,14 +45,9 @@ def _pending_event(webhook):
     [RequestsConnectionError("dead"), Timeout("hung"), None],
     ids=["connection-error", "timeout", "error-response"],
 )
-def test_all_failure_modes_retry_and_reach_terminal_failure(
-    settings, responses, failure
-):
-    # Connection failure, timeout and error response must behave identically:
-    # record the failure and retry, ending in a terminal FAILURE —
-    # never stranded PENDING.
+def test_all_failure_modes_record_and_retry(settings, responses, failure):
     settings.DJANGO_WEBHOOK = dict(
-        MODELS=["tests.User"], USE_CACHE=False, MAX_RETRIES=1
+        MODELS=["tests.User"], USE_CACHE=False, MAX_RETRIES=5
     )
     webhook = _webhook()
     event = _pending_event(webhook)
@@ -67,9 +65,46 @@ def test_all_failure_modes_retry_and_reach_terminal_failure(
         )
 
     event.refresh_from_db()
+    assert event.status == RETRYING
+    assert event.error
+    assert event.attempts == 1
+    assert event.last_attempt_at is not None
+    assert WebhookEvent.objects.filter(status=states.PENDING).count() == 0
+
+
+def test_exhausted_retries_reach_terminal_failure(settings, responses):
+    settings.DJANGO_WEBHOOK = dict(
+        MODELS=["tests.User"], USE_CACHE=False, MAX_RETRIES=0
+    )
+    webhook = _webhook()
+    event = _pending_event(webhook)
+    responses.post(webhook.url, status=500)
+
+    # With no retries left celery re-raises the original delivery exception.
+    with pytest.raises((Retry, MaxRetriesExceededError, RequestException)):
+        fire_webhook.delay(webhook.id, payload="{}", webhook_event_id=event.id)
+
+    event.refresh_from_db()
     assert event.status == states.FAILURE
     assert event.error
-    assert WebhookEvent.objects.filter(status=states.PENDING).count() == 0
+
+
+def test_retry_countdown_grows_and_is_capped():
+    task = SimpleNamespace(
+        default_retry_delay=60,
+        retry_backoff_max=3600,
+        retry_jitter=False,
+        request=SimpleNamespace(retries=0),
+    )
+    intervals = []
+    for attempt in range(8):
+        task.request.retries = attempt
+        intervals.append(retry_countdown(task))
+
+    assert intervals == sorted(intervals)
+    assert intervals[0] == 60
+    assert intervals[0] < intervals[-1]
+    assert max(intervals) == 3600
 
 
 def test_request_carries_configured_timeout(settings, mocker):
@@ -101,6 +136,8 @@ def test_success_marks_terminal_success(settings, responses):
 
     event.refresh_from_db()
     assert event.status == states.SUCCESS
+    assert event.attempts == 1
+    assert event.delivered_at is not None
 
 
 def test_success_clears_a_prior_failure_error(settings, responses):

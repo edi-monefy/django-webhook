@@ -9,9 +9,11 @@ the package's core invariants:
   originating transaction commits, and never if it rolls back. Configurable via
   ``DJANGO_WEBHOOK["DISPATCH_ON_COMMIT"]`` (default on). With no transaction
   open, dispatch happens immediately.
-* **The writer is never harmed.** Serializing and enqueueing runs after commit
-  and is fully isolated: any error degrades to a recorded, retryable delivery
-  failure instead of propagating into the caller's ``save()``.
+* **The writer is never harmed.** Enqueueing runs after commit and is fully
+  isolated: a broker or database error degrades to a recorded delivery failure
+  instead of propagating into the caller's ``save()``. A payload that cannot be
+  produced is recorded ``INVALID`` and never sent — or, under
+  ``STRICT_PAYLOAD``, raises at emission so the bug is fixed rather than shipped.
 * **Event identity.** Every event carries a unique ``event_id`` and an
   ``occurred_at`` captured at emission, both stable across retries.
 * **Direct dispatch.** Emission builds and enqueues deliveries directly. It
@@ -29,8 +31,10 @@ from django.db import DEFAULT_DB_ALIAS, connections, transaction
 from django.utils import timezone
 
 from . import tasks
+from .constants import INVALID
+from .exceptions import PayloadError
 from .models import Webhook, WebhookEvent
-from .serializers import encode_payload, serialize_instance
+from .serializers import check_encodable, encode_payload, serialize_instance
 from .settings import get_settings
 from .util import cache
 
@@ -75,14 +79,13 @@ def emit_events(instances, operation, *, occurred_at=None):
         # write to a secondary database dispatches on that database's commit.
         state = instance._state  # pylint: disable=protected-access
         using = state.db or DEFAULT_DB_ALIAS
-        # Serialize *now*, in the writer's call stack, so the snapshot reflects
-        # the state at the moment of change. This is isolated (never raises —
-        # see ``serialize_instance``), so it cannot harm the write, and it is
-        # correct on delete, where ``instance.pk`` is cleared before the
-        # on-commit callback would run.
-        data, serialize_error = serialize_instance(instance, model_label)
+        # Serialize now, not on commit: captures the state at the moment of
+        # change, and ``instance.pk`` is cleared before on-commit runs.
+        data, payload_error = serialize_instance(instance, model_label)
+        if payload_error is None:
+            payload_error = check_encodable(data, settings["PAYLOAD_ENCODER_CLASS"])
         _schedule(
-            topic, model_label, pk, data, occurred_at, serialize_error, settings, using
+            topic, model_label, pk, data, occurred_at, payload_error, settings, using
         )
 
 
@@ -95,12 +98,12 @@ def _schedule(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     pk,
     data,
     occurred_at,
-    serialize_error,
+    payload_error,
     settings,
     using=DEFAULT_DB_ALIAS,
 ):
     def run():
-        _deliver(topic, model_label, data, occurred_at, serialize_error, settings)
+        _deliver(topic, model_label, pk, data, occurred_at, payload_error, settings)
 
     if not settings["DISPATCH_ON_COMMIT"]:
         run()
@@ -149,7 +152,7 @@ def _coalesce_buffer(connection, using):
 # Delivery production (runs after commit; fully isolated)
 # --------------------------------------------------------------------------- #
 def _deliver(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    topic, model_label, data, occurred_at, serialize_error, settings
+    topic, model_label, pk, data, occurred_at, payload_error, settings
 ):
     """
     Build and enqueue a delivery for every matching subscription. Each
@@ -173,9 +176,10 @@ def _deliver(  # pylint: disable=too-many-arguments,too-many-positional-argument
             webhook_url=webhook_url,
             topic=topic,
             model_label=model_label,
+            pk=pk,
             data=data,
             occurred_at=occurred_at,
-            serialize_error=serialize_error,
+            payload_error=payload_error,
             encoder_cls=encoder_cls,
             settings=settings,
         )
@@ -188,14 +192,21 @@ def _deliver_one(  # pylint: disable=too-many-arguments,too-many-locals
     webhook_url,
     topic,
     model_label,
+    pk,
     data,
     occurred_at,
-    serialize_error,
+    payload_error,
     encoder_cls,
     settings,
 ):
     # pylint: disable=broad-except
     store_events = settings["STORE_EVENTS"]
+    if payload_error is not None:
+        _record_invalid(
+            webhook_id, webhook_url, topic, model_label, pk, occurred_at, payload_error
+        )
+        return
+
     event = None
     try:
         event_id = uuid.uuid4()
@@ -207,8 +218,22 @@ def _deliver_one(  # pylint: disable=too-many-arguments,too-many-locals
             object_type=model_label,
             webhook_uuid=str(webhook_uuid),
         )
-        payload, encode_error = encode_payload(envelope, encoder_cls)
-        error = serialize_error or encode_error
+        try:
+            payload, encode_error = encode_payload(envelope, encoder_cls)
+        except PayloadError as ex:
+            encode_error = str(ex)
+            payload = None
+        if encode_error is not None:
+            _record_invalid(
+                webhook_id,
+                webhook_url,
+                topic,
+                model_label,
+                pk,
+                occurred_at,
+                encode_error,
+            )
+            return
 
         if store_events:
             # Store the encoded-then-parsed envelope (plain JSON primitives) so
@@ -219,15 +244,11 @@ def _deliver_one(  # pylint: disable=too-many-arguments,too-many-locals
                 event_id=event_id,
                 object=json.loads(payload),
                 object_type=model_label,
+                object_pk=None if pk is None else str(pk),
                 status=states.PENDING,
                 occurred_at=occurred_at,
                 url=webhook_url or "",
                 topic=topic,
-                # A note on any degradation (unserializable value, fallback
-                # encoding). Status still reflects the delivery outcome; this
-                # records that the payload could not be fully represented so the
-                # loss is never silent.
-                error=error,
             )
 
         # Referenced through the module (not a bound name) so tests and the
@@ -259,6 +280,40 @@ def _deliver_one(  # pylint: disable=too-many-arguments,too-many-locals
             )
         else:
             _record_enqueue_failure(webhook_id, topic, model_label, occurred_at, ex)
+
+
+def _record_invalid(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    webhook_id, webhook_url, topic, model_label, pk, occurred_at, error
+):
+    """
+    Record an event whose payload could not be produced, and send nothing. No
+    payload is stored: a placeholder would be indistinguishable from real data
+    at the subscriber if it were ever re-sent.
+    """
+    # pylint: disable=broad-except
+    logger.error(
+        "Webhook payload could not be produced for %s pk=%s topic=%s: %s",
+        model_label,
+        pk,
+        topic,
+        error,
+    )
+    if not get_settings()["STORE_EVENTS"]:
+        return
+    try:
+        WebhookEvent.objects.create(
+            webhook_id=webhook_id,
+            object={},
+            object_type=model_label,
+            object_pk=None if pk is None else str(pk),
+            status=INVALID,
+            occurred_at=occurred_at,
+            url=webhook_url or "",
+            topic=topic,
+            error=error,
+        )
+    except Exception:
+        logger.exception("Failed to record invalid webhook payload")
 
 
 def _record_enqueue_failure(webhook_id, topic, model_label, occurred_at, ex):

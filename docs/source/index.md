@@ -44,12 +44,14 @@ retries), so at-least-once redeliveries are safe to dedup and order.
 ## 🔥 Features
 - Automatically sends webhooks on model changes
 - Dispatch only after the database transaction commits — a rollback never publishes
-- Event production is isolated from the writer: a serializer or broker error can never fail `save()`
+- Event production is isolated from the writer: a broker error can never fail `save()`
 - Leverages Celery for processing
 - Webhook authentication using HMAC
 - Retries every failure mode (connection, timeout, error response) with exponential backoff
 - Configurable request timeout
+- A delivery still being retried is never reported as failed
 - Manual re-send of recorded deliveries, from the admin or programmatically
+- A payload that cannot be produced is recorded and never delivered, never degraded
 - Independent retention windows for succeeded and failed deliveries
 - Pluggable per-model payload serializers
 - Public emission API for set-based writes (`QuerySet.update`, `bulk_create`, `bulk_update`)

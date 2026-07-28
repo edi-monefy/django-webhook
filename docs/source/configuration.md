@@ -29,6 +29,9 @@ DJANGO_WEBHOOK = dict(
     FAILED_EVENTS_RETENTION_DAYS=None,
 
     # --- Payload ---
+    # Raise when a payload cannot be produced, instead of recording it INVALID.
+    # None means settings.DEBUG. Set `DEBUG or TESTING` so CI raises too.
+    STRICT_PAYLOAD=None,
     # Global JSON encoder (dotted path or class).
     PAYLOAD_ENCODER_CLASS="django.core.serializers.json.DjangoJSONEncoder",
     # Global serializer override (dotted path to a callable(instance) -> dict).
@@ -125,6 +128,22 @@ between a select and an update. Backends without `RETURNING` can use `SELECT ...
 inside a transaction instead. django-webhook does not perform the write — it only publishes the
 rows you give it.
 
+## Delivery status
+
+| Status | Meaning |
+|---|---|
+| `PENDING` | Recorded, not yet attempted. |
+| `RETRYING` | An attempt failed and another is scheduled. Still in flight — leave it alone. |
+| `SUCCESS` | The subscriber confirmed receipt. |
+| `FAILURE` | Retries exhausted, or the subscription was inactive. Re-sendable. |
+| `INVALID` | The payload could not be produced. Not retried and not re-sendable. |
+
+`RETRYING` is what makes `FAILURE` mean something: a delivery that is still being retried is never
+reported as failed, so `WebhookEvent.objects.failed()` is safe to alert on and safe to re-send.
+
+Each row also carries `attempts` (cumulative, across re-sends), `resends`, `last_attempt_at` and
+`delivered_at`. Per-attempt detail is not stored — it goes to the application log.
+
 ## Re-sending failed deliveries
 
 Recorded deliveries can be re-sent from the Django admin (select rows → *Re-send selected webhook
@@ -137,6 +156,25 @@ from django_webhook.models import WebhookEvent
 resend_webhook_event(event_id)
 resend_webhook_events(WebhookEvent.objects.failed())
 ```
+
+Only `SUCCESS` and `FAILURE` rows are re-sendable. Rows still in flight are skipped, so a re-send
+can never race a retry chain and double-deliver.
+
+## When a payload cannot be produced
+
+If a serializer raises, or the encoder cannot represent a value, the event is recorded `INVALID`
+and **nothing is sent**. No placeholder payload is stored or delivered: a subscriber cannot tell a
+degraded payload from a real one, and would happily overwrite its own record with it.
+
+`INVALID` is not recoverable through the audit log — the stored payload is the bad one, so
+re-sending it would only repeat the mistake. Fix the serializer and re-emit from the source
+instance with `emit_events(...)`.
+
+Under `STRICT_PAYLOAD` (defaults to `settings.DEBUG`) the failure raises at the `save()` that
+caused it instead, before any event exists. Serialization runs whether or not a subscription
+exists, so a broken serializer surfaces on the first write in development — no webhook setup and
+no worker required. Keep it off in production, where raising would take the write path down with
+the observer.
 
 ## Populating topics
 

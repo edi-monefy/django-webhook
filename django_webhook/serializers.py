@@ -18,9 +18,8 @@ concerns live here:
 * A documented extension point: projects can supply a per-model or a global
   serializer without patching the package.
 
-Encoding degrades safely: if the configured encoder cannot represent a value,
-the value is coerced to a visible representation and the delivery is flagged,
-rather than being silently omitted or raising into the writer's ``save()``.
+A payload that cannot be produced is never delivered: the event is recorded
+``INVALID`` and no request is sent. Under ``STRICT_PAYLOAD`` it raises instead.
 """
 
 import json
@@ -28,7 +27,8 @@ import logging
 
 from django.utils.module_loading import import_string
 
-from .settings import get_settings
+from .exceptions import PayloadError
+from .settings import get_settings, strict_payload
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +89,11 @@ def get_serializer(model_label):
 
 def serialize_instance(instance, model_label=None):
     """
-    Serialize ``instance`` using the resolved serializer, degrading to a minimal
-    snapshot if the serializer raises so a delivery is never lost outright.
+    Serialize ``instance`` using the resolved serializer.
 
-    Returns ``(data, error)`` where ``error`` is ``None`` on success or a short
-    message describing why the full snapshot could not be produced.
+    Returns ``(data, error)``. On failure ``data`` is ``None`` — no placeholder
+    snapshot is produced, because a subscriber cannot distinguish one from a
+    genuine event. Raises :class:`PayloadError` when ``STRICT_PAYLOAD`` is on.
     """
     if model_label is None:
         model_label = instance._meta.label
@@ -102,36 +102,45 @@ def serialize_instance(instance, model_label=None):
         return serializer(instance), None
     except Exception as ex:  # pylint: disable=broad-except
         logger.exception("Webhook serializer failed for %s", model_label)
-        fallback = {"pk": getattr(instance, "pk", None)}
-        return fallback, f"serializer error: {ex!r}"
+        error = f"serializer error: {ex!r}"
+        if strict_payload():
+            raise PayloadError(f"{model_label}: {error}") from ex
+        return None, error
 
 
-class SafeFallbackEncoder(json.JSONEncoder):
+def check_encodable(data, encoder_cls=None):
     """
-    Last-resort encoder used only after the configured encoder has failed. It
-    never raises: any value it cannot represent is coerced to its ``repr`` so
-    the value is surfaced rather than silently dropped.
-    """
+    Verify ``data`` can be encoded by the configured payload encoder, returning
+    ``None`` when it can or an error message when it cannot. Raises
+    :class:`PayloadError` when ``STRICT_PAYLOAD`` is on.
 
-    def default(self, o):
-        try:
-            return super().default(o)
-        except TypeError:
-            return repr(o)
+    Called once at emission so an unencodable value is attributed to the
+    instance carrying it, rather than surfacing later per-subscription.
+    """
+    if encoder_cls is None:
+        encoder_cls = get_settings()["PAYLOAD_ENCODER_CLASS"]
+    try:
+        json.dumps(data, cls=encoder_cls)
+        return None
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.exception("Webhook payload encoding failed")
+        error = f"encoding error: {ex!r}"
+        if strict_payload():
+            raise PayloadError(error) from ex
+        return error
 
 
 def encode_payload(envelope, encoder_cls):
     """
     Encode ``envelope`` to a JSON string.
 
-    Returns ``(payload_str, error)``. On the happy path ``error`` is ``None``.
-    If the configured encoder cannot represent a value the payload is re-encoded
-    with :class:`SafeFallbackEncoder` (so no value is silently omitted) and
-    ``error`` describes the failure. This keeps encoder failure from propagating
-    into the caller's ``save()``.
+    Returns ``(payload_str, error)``; on failure ``payload_str`` is ``None``.
     """
     try:
         return json.dumps(envelope, cls=encoder_cls), None
     except Exception as ex:  # pylint: disable=broad-except
-        logger.exception("Webhook payload encoding failed; using safe fallback")
-        return json.dumps(envelope, cls=SafeFallbackEncoder), f"encoding error: {ex!r}"
+        logger.exception("Webhook envelope encoding failed")
+        error = f"encoding error: {ex!r}"
+        if strict_payload():
+            raise PayloadError(error) from ex
+        return None, error

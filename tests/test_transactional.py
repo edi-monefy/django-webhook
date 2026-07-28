@@ -3,16 +3,24 @@ Transactional integrity: dispatch on commit only, and the writer is never
 harmed by event production.
 """
 
-import json
-
 import pytest
 from celery import states
 from django.db import transaction
 
+from django_webhook.constants import INVALID
+from django_webhook.exceptions import PayloadError
 from django_webhook.models import WebhookEvent
 from django_webhook.test_factories import WebhookFactory, WebhookTopicFactory
 from tests.model_data import TEST_JOIN_DATE, TEST_LAST_ACTIVE
 from tests.models import User
+
+
+class _Unencodable:  # pylint: disable=too-few-public-methods
+    pass
+
+
+def _unencodable_serializer(instance):  # pylint: disable=unused-argument
+    return {"weird": _Unencodable()}
 
 
 def _make_webhook(responses):
@@ -82,15 +90,14 @@ def test_enqueue_failure_is_recorded_not_raised(
 
 
 @pytest.mark.django_db
-def test_serializer_failure_does_not_break_write(
+def test_serializer_failure_records_invalid_and_delivers_nothing(
     settings, responses, django_capture_on_commit_callbacks
 ):
-    # An unserializable value degrades to a delivered-but-flagged event; the
-    # write completes normally.
     settings.DJANGO_WEBHOOK = dict(
         MODELS=["tests.User"],
         USE_CACHE=False,
         SERIALIZER_CLASS="tests.test_serializers._raising_serializer",
+        STRICT_PAYLOAD=False,
     )
     webhook = WebhookFactory(topics=[WebhookTopicFactory(name="tests.User/create")])
     responses.post(webhook.url)
@@ -99,10 +106,48 @@ def test_serializer_failure_does_not_break_write(
         user = _create_user()  # must not raise
 
     assert User.objects.filter(id=user.id).exists()
-    assert len(responses.calls) == 1  # still delivered
-    # The degradation is surfaced in the payload (minimal snapshot), never
-    # silently omitted — even though the delivery itself succeeded.
-    body = json.loads(responses.calls[0].request.body)
-    assert body["object"] == {"pk": user.id}
+    assert len(responses.calls) == 0
+
     event = WebhookEvent.objects.get()
-    assert event.status == states.SUCCESS
+    assert event.status == INVALID
+    assert event.object == {}
+    assert event.object_pk == str(user.id)
+    assert "serializer error" in (event.error or "")
+
+
+@pytest.mark.django_db
+def test_unencodable_value_records_invalid_and_delivers_nothing(
+    settings, responses, django_capture_on_commit_callbacks
+):
+    settings.DJANGO_WEBHOOK = dict(
+        MODELS=["tests.User"],
+        USE_CACHE=False,
+        SERIALIZER_CLASS="tests.test_transactional._unencodable_serializer",
+        STRICT_PAYLOAD=False,
+    )
+    webhook = WebhookFactory(topics=[WebhookTopicFactory(name="tests.User/create")])
+    responses.post(webhook.url)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        _create_user()
+
+    assert len(responses.calls) == 0
+    event = WebhookEvent.objects.get()
+    assert event.status == INVALID
+    assert "encoding error" in (event.error or "")
+
+
+@pytest.mark.django_db
+def test_strict_payload_raises_into_the_writer(settings):
+    settings.DJANGO_WEBHOOK = dict(
+        MODELS=["tests.User"],
+        USE_CACHE=False,
+        SERIALIZER_CLASS="tests.test_serializers._raising_serializer",
+        STRICT_PAYLOAD=True,
+    )
+    WebhookFactory(topics=[WebhookTopicFactory(name="tests.User/create")])
+
+    with pytest.raises(PayloadError):
+        _create_user()
+
+    assert WebhookEvent.objects.count() == 0

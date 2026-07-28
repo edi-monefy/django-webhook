@@ -6,6 +6,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.test import override_settings
 from django.utils import timezone
 
+from django_webhook.constants import INVALID, RETRYING
 from django_webhook.models import WebhookEvent
 from django_webhook.tasks import clear_webhook_events
 from django_webhook.test_factories import (
@@ -143,6 +144,45 @@ def test_clear_purges_failed_when_window_configured():
         STORE_EVENTS=True,
         MODELS=["tests.User"],
         USE_CACHE=False,
+        SUCCEEDED_EVENTS_RETENTION_DAYS=30,
+        FAILED_EVENTS_RETENTION_DAYS=1,
+    )
+)
+def test_clear_purges_invalid_on_the_failed_window():
+    old_invalid = WebhookEventFactory(status=INVALID)
+    _age(old_invalid, 5)
+    recent_invalid = WebhookEventFactory(status=INVALID)
+
+    clear_webhook_events.delay()
+
+    remaining = set(WebhookEvent.objects.values_list("id", flat=True))
+    assert remaining == {recent_invalid.id}
+
+
+@override_settings(
+    DJANGO_WEBHOOK=dict(
+        STORE_EVENTS=True,
+        MODELS=["tests.User"],
+        USE_CACHE=False,
+        EVENTS_RETENTION_DAYS=1,
+    )
+)
+def test_clear_keeps_invalid_when_no_failed_window():
+    old_invalid = WebhookEventFactory(status=INVALID)
+    _age(old_invalid, 5)
+
+    clear_webhook_events.delay()
+
+    old_invalid.refresh_from_db()
+    assert old_invalid.status == INVALID
+    assert old_invalid.error is None or "abandoned" not in (old_invalid.error or "")
+
+
+@override_settings(
+    DJANGO_WEBHOOK=dict(
+        STORE_EVENTS=True,
+        MODELS=["tests.User"],
+        USE_CACHE=False,
         EVENTS_RETENTION_DAYS=1,
     )
 )
@@ -152,12 +192,16 @@ def test_clear_reaps_abandoned_non_terminal_rows():
     # terminal state + cleanup path), not deleted.
     recent_pending = WebhookEventFactory(status=states.PENDING)
     old_pending = WebhookEventFactory(status=states.PENDING)
+    old_retrying = WebhookEventFactory(status=RETRYING)
     _age(old_pending, 5)
+    _age(old_retrying, 5)
 
     clear_webhook_events.delay()
 
     recent_pending.refresh_from_db()
     old_pending.refresh_from_db()
+    old_retrying.refresh_from_db()
     assert recent_pending.status == states.PENDING
     assert old_pending.status == states.FAILURE
+    assert old_retrying.status == states.FAILURE
     assert old_pending.error is not None and "abandoned" in old_pending.error

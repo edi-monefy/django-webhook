@@ -3,10 +3,13 @@ from datetime import timedelta
 
 from celery import current_app as app
 from celery import states
+from celery.utils.time import get_exponential_backoff_interval
+from django.db.models import F
 from django.utils import timezone
 from requests import Session
 from requests.exceptions import RequestException
 
+from django_webhook.constants import RETRYING, TERMINAL_STATES
 from django_webhook.models import Webhook, WebhookEvent
 
 from .http import prepare_request
@@ -35,15 +38,16 @@ def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-argu
     Deliver ``payload`` to ``webhook_id``.
 
     When ``webhook_event_id`` is given, that pre-created :class:`WebhookEvent`
-    row is updated to its terminal status; the row is created by the dispatcher
-    before enqueueing so an enqueue failure is never a silent loss. When it is
-    absent (``STORE_EVENTS`` off, or a legacy caller) the delivery is sent
-    without recording.
+    row is updated as the delivery progresses; the row is created by the
+    dispatcher before enqueueing so an enqueue failure is never a silent loss.
+    When it is absent (``STORE_EVENTS`` off, or a legacy caller) the delivery is
+    sent without recording.
 
     All three ways a delivery can fail to be confirmed — connection failure,
     timeout, and error response — are handled identically: record the failure,
-    then retry with backoff up to ``MAX_RETRIES``. The row always reaches a
-    terminal recorded state.
+    then retry with exponential backoff up to ``MAX_RETRIES``. The row is
+    ``RETRYING`` while attempts remain and only ``FAILURE`` once they are spent,
+    so a delivery still in flight is never mistaken for one that gave up.
     """
     settings = get_settings()
     self.max_retries = settings["MAX_RETRIES"]
@@ -54,8 +58,6 @@ def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-argu
             "Webhook: %s is missing/inactive and will not be fired.", webhook_id
         )
         if webhook_event_id is not None:
-            # Not a delivery failure: the subscription opted out. Leave a
-            # terminal, non-retryable marker rather than a stranded PENDING row.
             _update_event(
                 webhook_event_id,
                 status=states.FAILURE,
@@ -65,39 +67,61 @@ def fire_webhook(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     req = prepare_request(webhook, payload)  # type: ignore
     timeout = settings["REQUEST_TIMEOUT"]
+    _record_attempt(webhook_event_id)
 
     try:
         response = Session().send(req, timeout=timeout)
         response.raise_for_status()
     except RequestException as ex:
-        # ``ex.response`` is present only for error responses; it is absent for
-        # connection failures and timeouts. Guard it so those two — the most
-        # common real-world failures — retry and record like any other.
+        # ``ex.response`` is absent for connection failures and timeouts.
         status_code = getattr(ex.response, "status_code", None)
         logging.warning(
-            "Webhook request failed webhook_id=%s status_code=%s",
+            "Webhook request failed webhook_id=%s status_code=%s attempt=%s",
             webhook_id,
             status_code,
+            self.request.retries + 1,
         )
+        exhausted = self.request.retries >= self.max_retries
         if webhook_event_id is not None:
             _update_event(
                 webhook_event_id,
-                status=states.FAILURE,
+                status=states.FAILURE if exhausted else RETRYING,
                 error=f"delivery failed: {ex!r} status_code={status_code}",
             )
-        raise self.retry(exc=ex)
+        raise self.retry(exc=ex, countdown=retry_countdown(self))
 
     if webhook_event_id is not None:
-        _update_event(webhook_event_id, status=states.SUCCESS)
+        _update_event(
+            webhook_event_id, status=states.SUCCESS, delivered_at=timezone.now()
+        )
 
 
-def _update_event(webhook_event_id, *, status, error=None):
-    # error tracks the reason the row is not (yet) successfully delivered, so it
-    # is set on failure and cleared on success. A prior attempt's failure note
-    # must not survive a later successful retry. Any production-time degradation
-    # (e.g. a value the encoder had to coerce) is still visible in the stored
-    # payload itself, so clearing the note here loses nothing that was omitted.
-    WebhookEvent.objects.filter(id=webhook_event_id).update(status=status, error=error)
+def retry_countdown(task):
+    """
+    Seconds to wait before ``task``'s next retry, growing exponentially and
+    capped at its ``retry_backoff_max``.
+    """
+    return get_exponential_backoff_interval(
+        factor=task.default_retry_delay,
+        retries=task.request.retries,
+        maximum=getattr(task, "retry_backoff_max", 60 * 60),
+        full_jitter=getattr(task, "retry_jitter", False),
+    )
+
+
+def _record_attempt(webhook_event_id):
+    if webhook_event_id is None:
+        return
+    WebhookEvent.objects.filter(id=webhook_event_id).update(
+        attempts=F("attempts") + 1, last_attempt_at=timezone.now()
+    )
+
+
+def _update_event(webhook_event_id, *, status, error=None, delivered_at=None):
+    fields = {"status": status, "error": error}
+    if delivered_at is not None:
+        fields["delivered_at"] = delivered_at
+    WebhookEvent.objects.filter(id=webhook_event_id).update(**fields)
 
 
 def resend_webhook_event(webhook_event_id):
@@ -131,15 +155,15 @@ def clear_webhook_events():
     """
     Purge old webhook events.
 
-    Succeeded and failed deliveries are purged on independent windows so that a
-    delivery that failed and was never re-sent is not silently discarded on a
-    timer. Failed deliveries are retained forever unless
-    ``FAILED_EVENTS_RETENTION_DAYS`` is set explicitly.
+    Succeeded deliveries are purged on their own window. Failed and ``INVALID``
+    deliveries share a second, independent one so that neither an unrecovered
+    failure nor an unproducible payload is silently discarded on a timer; both
+    are retained forever unless ``FAILED_EVENTS_RETENTION_DAYS`` is set.
 
     Rows left non-terminal by a crashed worker (e.g. the dispatcher created the
     ``PENDING`` row but ``fire_webhook`` never completed — broker restart, OOM,
     deploy) are first reaped into ``FAILURE`` so they gain a terminal state and a
-    cleanup path (failed retention) instead of accumulating with no way to prune.
+    cleanup path instead of accumulating with no way to prune.
     """
     now = timezone.now()
 
@@ -150,11 +174,8 @@ def clear_webhook_events():
     if succeeded_days is not None:
         cutoff = now - timedelta(days=succeeded_days)
 
-        # Reap abandoned in-flight rows (anything not SUCCESS/FAILURE) older than
-        # the window into FAILURE. A row is only non-terminal between creation
-        # and its first delivery attempt, so any that old was left behind.
         reaped = (
-            WebhookEvent.objects.exclude(status__in=[states.SUCCESS, states.FAILURE])
+            WebhookEvent.objects.exclude(status__in=TERMINAL_STATES)
             .filter(created__lt=cutoff)
             .update(
                 status=states.FAILURE,
@@ -172,14 +193,17 @@ def clear_webhook_events():
 
     if failed_days is not None:
         cutoff = now - timedelta(days=failed_days)
-        qs = WebhookEvent.objects.failed().filter(created__lt=cutoff)
+        qs = WebhookEvent.objects.unrecovered().filter(created__lt=cutoff)
         logging.info(
-            "Clearing %s failed webhook events older than %s", qs.count(), cutoff
+            "Clearing %s failed/invalid webhook events older than %s",
+            qs.count(),
+            cutoff,
         )
         deleted += qs.delete()[0]
     else:
         logging.info(
-            "FAILED_EVENTS_RETENTION_DAYS is unset; failed deliveries are retained."
+            "FAILED_EVENTS_RETENTION_DAYS is unset; failed and invalid "
+            "deliveries are retained."
         )
 
     return deleted

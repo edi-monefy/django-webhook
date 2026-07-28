@@ -11,15 +11,9 @@ from django.db.utils import OperationalError, ProgrammingError
 
 from django_webhook.settings import get_settings
 
+from .constants import RESENDABLE_STATES, STATES, TOPIC_REGEX
+from .querysets import WebhookEventQuerySet
 from .validators import validate_topic_model
-
-topic_regex = r"\w+\.\w+\/[create|update|delete]"
-
-STATES = [
-    (states.PENDING, states.PENDING),
-    (states.FAILURE, states.FAILURE),
-    (states.SUCCESS, states.SUCCESS),
-]
 
 
 class Webhook(models.Model):
@@ -44,7 +38,7 @@ class WebhookTopic(models.Model):  # type: ignore
         unique=True,
         validators=[
             validators.RegexValidator(
-                topic_regex, message="Topic must match: " + topic_regex
+                TOPIC_REGEX, message="Topic must match: " + TOPIC_REGEX
             ),
             validate_topic_model,
         ],
@@ -69,30 +63,6 @@ class WebhookSecret(models.Model):
     created = DateTimeField(auto_now_add=True)
 
 
-class WebhookEventQuerySet(models.QuerySet):
-    def failed(self):
-        return self.filter(status=states.FAILURE)
-
-    def succeeded(self):
-        return self.filter(status=states.SUCCESS)
-
-    def resend(self):
-        """
-        Re-enqueue every delivery in this queryset with a single status update
-        (plus one task per event). Rows whose subscription was deleted are
-        skipped. Returns the number re-fired.
-        """
-        resendable = list(self.exclude(webhook_id__isnull=True))
-        if not resendable:
-            return 0
-        WebhookEvent.objects.filter(id__in=[e.id for e in resendable]).update(
-            status=states.PENDING, error=None
-        )
-        for event in resendable:
-            event._enqueue_delivery()  # type: ignore[attr-defined]  # pylint: disable=protected-access
-        return len(resendable)
-
-
 class WebhookEvent(models.Model):
     webhook = models.ForeignKey(
         Webhook,
@@ -111,12 +81,17 @@ class WebhookEvent(models.Model):
         editable=False,
     )
     object_type = models.CharField(max_length=50, null=True, editable=False)
+    object_pk = models.CharField(max_length=255, null=True, editable=False)
     status = models.CharField(
         max_length=40,
         default=states.PENDING,
         choices=STATES,
         editable=False,
     )
+    attempts = models.PositiveIntegerField(default=0, editable=False)
+    resends = models.PositiveIntegerField(default=0, editable=False)
+    last_attempt_at = DateTimeField(null=True, editable=False)
+    delivered_at = DateTimeField(null=True, editable=False)
     created = DateTimeField(auto_now_add=True)
     # The time the change occurred, set at emission (not at send). Stable across
     # retries so subscribers can order and dedup redeliveries.
@@ -134,7 +109,9 @@ class WebhookEvent(models.Model):
     def resend(self):
         """
         Re-enqueue this delivery for sending. Resets the row to ``PENDING`` and
-        fires the delivery task against the stored payload.
+        fires the delivery task against the stored payload. Only a finished
+        delivery with a payload can be re-sent; the status check is part of the
+        UPDATE so two callers cannot both claim the same row.
         """
         if self.webhook_id is None:
             logging.warning(
@@ -143,9 +120,17 @@ class WebhookEvent(models.Model):
             )
             return False
 
-        WebhookEvent.objects.filter(id=self.id).update(
-            status=states.PENDING, error=None
-        )
+        claimed = WebhookEvent.objects.filter(
+            id=self.id, status__in=RESENDABLE_STATES
+        ).update(status=states.PENDING, error=None, resends=models.F("resends") + 1)
+        if not claimed:
+            logging.warning(
+                "Cannot resend WebhookEvent id=%s: status=%s is not re-sendable",
+                self.id,
+                self.status,
+            )
+            return False
+
         self._enqueue_delivery()
         return True
 
